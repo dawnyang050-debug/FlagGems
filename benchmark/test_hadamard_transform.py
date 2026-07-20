@@ -98,6 +98,10 @@ class HadamardBenchmark(base.GenericBenchmark2DOnly):
     def set_more_shapes(self):
         return []
 
+    def set_shapes(self, *args, **kwargs):
+        # Force _FHT_SHAPES; do not fall back to GenericBenchmark2DOnly in core_shapes.yaml
+        self.shapes = self.DEFAULT_SHAPES
+
 
 @pytest.mark.hadamard_transform
 @_skip_if_join_bug
