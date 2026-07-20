@@ -1,3 +1,17 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from .addmm import addmm
 from .amax import amax
 from .arange import arange, arange_start
@@ -19,7 +33,6 @@ from .matmul_bf16 import matmul_bf16
 from .matmul_int8 import matmul_int8
 from .min import min, min_dim
 from .mm import mm, mm_out
-from .mul import mul, mul_
 from .nonzero import nonzero
 from .ones import ones
 from .ones_like import ones_like
@@ -66,8 +79,6 @@ __all__ = [
     "min",
     "mm",
     "mm_out",
-    "mul",
-    "mul_",
     "nonzero",
     "ones",
     "ones_like",
