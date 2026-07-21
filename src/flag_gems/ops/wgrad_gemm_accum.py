@@ -77,8 +77,15 @@ def _fused_addmm_fp32_accum(
     semantics on H20/A100-class GPUs and aligns with Apex / CPU reference.
     """
     if main_grad.is_cuda:
-        with torch.backends.cuda.matmul.allow_tf32(False):
+        old_matmul_tf32 = torch.backends.cuda.matmul.allow_tf32
+        old_cudnn_tf32 = torch.backends.cudnn.allow_tf32
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
             torch.addmm(main_grad, mat1, mat2, beta=1, alpha=1, out=main_grad)
+        finally:
+            torch.backends.cuda.matmul.allow_tf32 = old_matmul_tf32
+            torch.backends.cudnn.allow_tf32 = old_cudnn_tf32
     else:
         torch.addmm(main_grad, mat1, mat2, beta=1, alpha=1, out=main_grad)
 
