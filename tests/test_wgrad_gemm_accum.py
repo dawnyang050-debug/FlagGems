@@ -62,14 +62,14 @@ def _collapse_to_2d(input_tensor, grad_output):
 
 
 def _ref_wgrad_gemm_accum_fp32_cpu(input_tensor, grad_output, main_grad):
-    """Independent CPU fp64 matmul reference (not GPU/Triton)."""
+    """Independent CPU fp64 matmul, accumulated in fp32 (matches main_grad dtype)."""
     ref_input = input_tensor.detach().cpu().double()
     ref_grad_output = grad_output.detach().cpu().double()
     input_2d, grad_output_2d = _collapse_to_2d(ref_input, ref_grad_output)
-    wgrad = grad_output_2d.t().contiguous() @ input_2d
-    main_grad_cpu = main_grad.detach().cpu().clone()
-    main_grad_cpu.add_(wgrad.to(torch.float32))
-    main_grad.copy_(main_grad_cpu)
+    wgrad_fp32 = (grad_output_2d.t().contiguous() @ input_2d).float()
+    main_grad_fp32 = main_grad.detach().cpu().float().clone()
+    main_grad_fp32.add_(wgrad_fp32)
+    main_grad.copy_(main_grad_fp32.to(device=main_grad.device, dtype=main_grad.dtype))
 
 
 def _ref_wgrad_gemm_accum_fp16_cpu(input_tensor, grad_output, main_grad, dtype):
@@ -115,7 +115,7 @@ def test_wgrad_gemm_accum_fp32_2d(batch, in_features, out_features, dtype):
         (out_features, in_features), dtype=torch.float32, device=flag_gems.device
     )
 
-    ref_main_grad = utils.to_reference(main_grad, True).clone()
+    ref_main_grad = main_grad.clone()
     res_main_grad = main_grad.clone()
 
     _ref_wgrad_gemm_accum_fp32_cpu(input_tensor, grad_output, ref_main_grad)
@@ -140,7 +140,7 @@ def test_wgrad_gemm_accum_fp32_3d(dim0, dim1, in_features, out_features, dtype):
         (out_features, in_features), dtype=torch.float32, device=flag_gems.device
     )
 
-    ref_main_grad = utils.to_reference(main_grad, True).clone()
+    ref_main_grad = main_grad.clone()
     res_main_grad = main_grad.clone()
 
     _ref_wgrad_gemm_accum_fp32_cpu(input_tensor, grad_output, ref_main_grad)

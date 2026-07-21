@@ -66,6 +66,23 @@ def _validate_device(*tensors: torch.Tensor) -> None:
         )
 
 
+def _fused_addmm_fp32_accum(
+    main_grad: torch.Tensor,
+    mat1: torch.Tensor,
+    mat2: torch.Tensor,
+) -> None:
+    """Fused ``main_grad += mat1 @ mat2`` via cuBLAS (Apex-aligned).
+
+    Disable TF32 so fp32 weight-gradient accumulation matches full fp32
+    semantics on H20/A100-class GPUs and aligns with Apex / CPU reference.
+    """
+    if main_grad.is_cuda:
+        with torch.backends.cuda.matmul.allow_tf32(False):
+            torch.addmm(main_grad, mat1, mat2, beta=1, alpha=1, out=main_grad)
+    else:
+        torch.addmm(main_grad, mat1, mat2, beta=1, alpha=1, out=main_grad)
+
+
 def _accum_wgrad(
     grad_output_2d: torch.Tensor,
     input_2d: torch.Tensor,
@@ -95,8 +112,8 @@ def _accum_wgrad(
         )
         main_grad.add_(wgrad)
     elif fp32_accum:
-        # fp32 activations: Apex uses cuBLAS; torch.addmm matches that path.
-        torch.addmm(main_grad, grad_output_T, input_c, beta=1, alpha=1, out=main_grad)
+        # fp32 activations: fused cuBLAS accumulate (matches Apex kernel).
+        _fused_addmm_fp32_accum(main_grad, grad_output_T, input_c)
     else:
         wgrad = mm(grad_output_T, input_c)
         main_grad.add_(wgrad)
