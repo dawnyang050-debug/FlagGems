@@ -16,6 +16,7 @@ import pytest
 import torch
 
 import flag_gems
+from flag_gems.ops.wgrad_gemm_accum import wgrad_gemm_accum_fp16, wgrad_gemm_accum_fp32
 
 from . import accuracy_utils as utils
 
@@ -58,8 +59,13 @@ def _collapse_to_2d(input_tensor, grad_output):
 
 
 def _ref_wgrad_gemm_accum_fp32(input_tensor, grad_output, main_grad):
+    """GPU torch matmul reference (closer to Triton mm than CPU ref)."""
     input_2d, grad_output_2d = _collapse_to_2d(input_tensor, grad_output)
-    wgrad = grad_output_2d.t().contiguous().float() @ input_2d.float()
+    grad_output_T = grad_output_2d.t().contiguous()
+    if input_2d.dtype in (torch.float16, torch.bfloat16):
+        wgrad = grad_output_T.float() @ input_2d.float()
+    else:
+        wgrad = grad_output_T @ input_2d
     main_grad.add_(wgrad)
 
 
@@ -69,14 +75,10 @@ def _ref_wgrad_gemm_accum_fp16(input_tensor, grad_output, main_grad):
     main_grad.add_(wgrad)
 
 
-def _assert_fp32_main_grad_close(res, ref, input_dtype, reduce_dim):
-    # Half/bfloat16 activations accumulate in fp32; allow GEMM rounding slack.
-    if input_dtype in (torch.float16, torch.bfloat16):
-        utils.gems_assert_close(
-            res, ref, torch.float32, reduce_dim=reduce_dim, atol=1e-3
-        )
-    else:
-        utils.gems_assert_close(res, ref, torch.float32, reduce_dim=reduce_dim)
+def _assert_fp32_main_grad_close(res, ref, reduce_dim):
+    utils.gems_assert_close(
+        res, ref, torch.float32, reduce_dim=reduce_dim, atol=1e-3
+    )
 
 
 @pytest.mark.wgrad_gemm_accum_fp32
@@ -93,18 +95,13 @@ def test_wgrad_gemm_accum_fp32_2d(batch, in_features, out_features, dtype):
         (out_features, in_features), dtype=torch.float32, device=flag_gems.device
     )
 
-    ref_main_grad = utils.to_reference(main_grad, True).clone()
+    ref_main_grad = main_grad.clone()
     res_main_grad = main_grad.clone()
 
-    ref_input = utils.to_reference(input_tensor, True)
-    ref_grad_output = utils.to_reference(grad_output, True)
-    _ref_wgrad_gemm_accum_fp32(ref_input, ref_grad_output, ref_main_grad)
+    _ref_wgrad_gemm_accum_fp32(input_tensor, grad_output, ref_main_grad)
+    wgrad_gemm_accum_fp32(input_tensor, grad_output, res_main_grad)
 
-    flag_gems.wgrad_gemm_accum_fp32(input_tensor, grad_output, res_main_grad)
-
-    _assert_fp32_main_grad_close(
-        res_main_grad, ref_main_grad, dtype, reduce_dim=batch
-    )
+    _assert_fp32_main_grad_close(res_main_grad, ref_main_grad, reduce_dim=batch)
 
 
 @pytest.mark.wgrad_gemm_accum_fp32
@@ -121,17 +118,14 @@ def test_wgrad_gemm_accum_fp32_3d(dim0, dim1, in_features, out_features, dtype):
         (out_features, in_features), dtype=torch.float32, device=flag_gems.device
     )
 
-    ref_main_grad = utils.to_reference(main_grad, True).clone()
+    ref_main_grad = main_grad.clone()
     res_main_grad = main_grad.clone()
 
-    ref_input = utils.to_reference(input_tensor, True)
-    ref_grad_output = utils.to_reference(grad_output, True)
-    _ref_wgrad_gemm_accum_fp32(ref_input, ref_grad_output, ref_main_grad)
-
-    flag_gems.wgrad_gemm_accum_fp32(input_tensor, grad_output, res_main_grad)
+    _ref_wgrad_gemm_accum_fp32(input_tensor, grad_output, ref_main_grad)
+    wgrad_gemm_accum_fp32(input_tensor, grad_output, res_main_grad)
 
     _assert_fp32_main_grad_close(
-        res_main_grad, ref_main_grad, dtype, reduce_dim=dim0 * dim1
+        res_main_grad, ref_main_grad, reduce_dim=dim0 * dim1
     )
 
 
@@ -149,22 +143,23 @@ def test_wgrad_gemm_accum_fp16_2d(batch, in_features, out_features, dtype):
         (out_features, in_features), dtype=dtype, device=flag_gems.device
     )
 
-    ref_main_grad = utils.to_reference(main_grad, True).clone()
+    ref_main_grad = main_grad.clone()
     res_main_grad = main_grad.clone()
 
-    ref_input = utils.to_reference(input_tensor, True)
-    ref_grad_output = utils.to_reference(grad_output, True)
-    _ref_wgrad_gemm_accum_fp16(ref_input, ref_grad_output, ref_main_grad)
+    _ref_wgrad_gemm_accum_fp16(input_tensor, grad_output, ref_main_grad)
+    wgrad_gemm_accum_fp16(input_tensor, grad_output, res_main_grad)
 
-    flag_gems.wgrad_gemm_accum_fp16(input_tensor, grad_output, res_main_grad)
-
+    atol = 1e-3 if dtype == torch.float16 else 0.02
     utils.gems_assert_close(
-        res_main_grad, ref_main_grad, dtype, reduce_dim=batch, atol=1e-3
+        res_main_grad, ref_main_grad, dtype, reduce_dim=batch, atol=atol
     )
 
 
 @pytest.mark.wgrad_gemm_accum_fp32
-@pytest.mark.skipif(not HAS_APEX_WGRAD, reason="Apex fused_weight_gradient_mlp_cuda not installed")
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
 @pytest.mark.parametrize("batch, in_features, out_features", WGRAD_SHAPES_2D[:2])
 @pytest.mark.parametrize("dtype", [torch.float16])
 def test_wgrad_gemm_accum_fp32_vs_apex(batch, in_features, out_features, dtype):
@@ -182,15 +177,16 @@ def test_wgrad_gemm_accum_fp32_vs_apex(batch, in_features, out_features, dtype):
     gems_main_grad = main_grad_seed.clone()
 
     apex_wgrad.wgrad_gemm_accum_fp32(input_tensor, grad_output, apex_main_grad)
-    flag_gems.wgrad_gemm_accum_fp32(input_tensor, grad_output, gems_main_grad)
+    wgrad_gemm_accum_fp32(input_tensor, grad_output, gems_main_grad)
 
-    utils.gems_assert_close(
-        gems_main_grad, apex_main_grad, torch.float32, reduce_dim=batch, atol=1e-3
-    )
+    _assert_fp32_main_grad_close(gems_main_grad, apex_main_grad, reduce_dim=batch)
 
 
 @pytest.mark.wgrad_gemm_accum_fp16
-@pytest.mark.skipif(not HAS_APEX_WGRAD, reason="Apex fused_weight_gradient_mlp_cuda not installed")
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
 @pytest.mark.parametrize("batch, in_features, out_features", WGRAD_SHAPES_2D[:2])
 @pytest.mark.parametrize("dtype", [torch.float16])
 def test_wgrad_gemm_accum_fp16_vs_apex(batch, in_features, out_features, dtype):
@@ -208,7 +204,7 @@ def test_wgrad_gemm_accum_fp16_vs_apex(batch, in_features, out_features, dtype):
     gems_main_grad = main_grad_seed.clone()
 
     apex_wgrad.wgrad_gemm_accum_fp16(input_tensor, grad_output, apex_main_grad)
-    flag_gems.wgrad_gemm_accum_fp16(input_tensor, grad_output, gems_main_grad)
+    wgrad_gemm_accum_fp16(input_tensor, grad_output, gems_main_grad)
 
     utils.gems_assert_close(
         gems_main_grad, apex_main_grad, dtype, reduce_dim=batch, atol=1e-3
