@@ -25,7 +25,7 @@ import torch
 
 import flag_gems
 
-from .addmm import addmm_dtype_out, addmm_out
+from .mm import mm
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,25 @@ def _validate_device(*tensors: torch.Tensor) -> None:
         raise RuntimeError(
             f"Expected tensors on {flag_gems.device}, but got {device.type}"
         )
+
+
+def _accum_wgrad(
+    grad_output_2d: torch.Tensor,
+    input_2d: torch.Tensor,
+    main_grad: torch.Tensor,
+    *,
+    compute_fp32: bool,
+) -> None:
+    grad_output_T = grad_output_2d.t().contiguous()
+    if compute_fp32 and input_2d.dtype in (torch.float16, torch.bfloat16):
+        wgrad = mm(
+            grad_output_T.to(torch.float32),
+            input_2d.to(torch.float32),
+        )
+        main_grad.add_(wgrad)
+    else:
+        wgrad = mm(grad_output_T, input_2d)
+        main_grad.add_(wgrad.to(main_grad.dtype))
 
 
 def wgrad_gemm_accum_fp32(
@@ -99,15 +118,11 @@ def wgrad_gemm_accum_fp32(
             f"({out_dim}, {in_dim}), got {tuple(main_grad.shape)}"
         )
 
-    grad_output_T = grad_output_2d.t().contiguous()
-    addmm_dtype_out(
-        main_grad,
-        grad_output_T,
+    _accum_wgrad(
+        grad_output_2d,
         input_2d,
-        torch.float32,
-        beta=1,
-        alpha=1,
-        out=main_grad,
+        main_grad,
+        compute_fp32=True,
     )
 
 
@@ -154,12 +169,9 @@ def wgrad_gemm_accum_fp16(
             f"({out_dim}, {in_dim}), got {tuple(main_grad.shape)}"
         )
 
-    grad_output_T = grad_output_2d.t().contiguous()
-    addmm_out(
-        main_grad,
-        grad_output_T,
+    _accum_wgrad(
+        grad_output_2d,
         input_2d,
-        beta=1,
-        alpha=1,
-        out=main_grad,
+        main_grad,
+        compute_fp32=False,
     )
