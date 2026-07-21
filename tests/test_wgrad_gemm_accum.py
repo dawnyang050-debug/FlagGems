@@ -46,6 +46,9 @@ if utils.bf16_is_supported:
 FP32_ACCUM_CPU_REF_DTYPES = [torch.float16]
 if utils.bf16_is_supported:
     FP32_ACCUM_CPU_REF_DTYPES.append(torch.bfloat16)
+FP32_ACCUM_3D_APEX_DTYPES = [torch.float16, torch.float32]
+if utils.bf16_is_supported:
+    FP32_ACCUM_3D_APEX_DTYPES.append(torch.bfloat16)
 
 FP16_ACCUM_INPUT_DTYPES = [torch.float16]
 if utils.bf16_is_supported:
@@ -53,6 +56,7 @@ if utils.bf16_is_supported:
 
 # Inner GEMM dimension K = collapsed batch size; scale atol like other BLAS tests.
 DEFAULT_ATOL = 1e-4
+TF32_OFF_ATOL = 1e-6
 
 
 def _collapse_to_2d(input_tensor, grad_output):
@@ -107,10 +111,31 @@ def _assert_vs_apex(res, ref, dtype, *, reduce_dim):
     )
 
 
+def _with_seed(seed: int):
+    """Set deterministic seed for reproducible coverage cases."""
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def _run_with_tf32_disabled(fn):
+    """Run function with TF32 disabled, then restore global flags."""
+    old_matmul_tf32 = torch.backends.cuda.matmul.allow_tf32
+    old_cudnn_tf32 = torch.backends.cudnn.allow_tf32
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        return fn()
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = old_matmul_tf32
+        torch.backends.cudnn.allow_tf32 = old_cudnn_tf32
+
+
 @pytest.mark.wgrad_gemm_accum_fp32
 @pytest.mark.parametrize("batch, in_features, out_features", WGRAD_SHAPES_2D)
 @pytest.mark.parametrize("dtype", FP32_ACCUM_CPU_REF_DTYPES)
 def test_wgrad_gemm_accum_fp32_2d(batch, in_features, out_features, dtype):
+    _with_seed(20260721)
     input_tensor = torch.randn(
         (batch, in_features), dtype=dtype, device=flag_gems.device
     )
@@ -136,6 +161,7 @@ def test_wgrad_gemm_accum_fp32_2d(batch, in_features, out_features, dtype):
 @pytest.mark.parametrize("dim0, dim1, in_features, out_features", WGRAD_SHAPES_3D)
 @pytest.mark.parametrize("dtype", FP32_ACCUM_CPU_REF_DTYPES)
 def test_wgrad_gemm_accum_fp32_3d(dim0, dim1, in_features, out_features, dtype):
+    _with_seed(20260722)
     input_tensor = torch.randn(
         (dim0, dim1, in_features), dtype=dtype, device=flag_gems.device
     )
@@ -164,6 +190,7 @@ def test_wgrad_gemm_accum_fp32_3d(dim0, dim1, in_features, out_features, dtype):
 @pytest.mark.parametrize("batch, in_features, out_features", WGRAD_SHAPES_2D)
 @pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
 def test_wgrad_gemm_accum_fp16_2d(batch, in_features, out_features, dtype):
+    _with_seed(20260723)
     input_tensor = torch.randn(
         (batch, in_features), dtype=dtype, device=flag_gems.device
     )
@@ -186,6 +213,7 @@ def test_wgrad_gemm_accum_fp16_2d(batch, in_features, out_features, dtype):
 @pytest.mark.wgrad_gemm_accum_fp32
 def test_wgrad_gemm_accum_fp32_accumulates_twice():
     """Verify += semantics across two micro-batch calls, not overwrite."""
+    _with_seed(20260724)
     batch, in_features, out_features = 4, 16, 32
     dtype = torch.float16
 
@@ -211,6 +239,7 @@ def test_wgrad_gemm_accum_fp32_accumulates_twice():
 
 @pytest.mark.wgrad_gemm_accum_fp32
 def test_wgrad_gemm_accum_fp32_from_zero_main_grad():
+    _with_seed(20260725)
     batch, in_features, out_features = 8, 32, 64
     input_tensor = torch.randn(
         (batch, in_features), dtype=torch.float16, device=flag_gems.device
@@ -259,6 +288,7 @@ def test_wgrad_gemm_accum_fp32_invalid_main_grad_dtype():
 @pytest.mark.parametrize("batch, in_features, out_features", WGRAD_SHAPES_2D)
 @pytest.mark.parametrize("dtype", FP32_ACCUM_INPUT_DTYPES)
 def test_wgrad_gemm_accum_fp32_vs_apex(batch, in_features, out_features, dtype):
+    _with_seed(20260726)
     input_tensor = torch.randn(
         (batch, in_features), dtype=dtype, device=flag_gems.device
     )
@@ -284,10 +314,11 @@ def test_wgrad_gemm_accum_fp32_vs_apex(batch, in_features, out_features, dtype):
     reason="Apex fused_weight_gradient_mlp_cuda not installed",
 )
 @pytest.mark.parametrize("dim0, dim1, in_features, out_features", WGRAD_SHAPES_3D)
-@pytest.mark.parametrize("dtype", [torch.float16])
+@pytest.mark.parametrize("dtype", FP32_ACCUM_3D_APEX_DTYPES)
 def test_wgrad_gemm_accum_fp32_vs_apex_3d(
     dim0, dim1, in_features, out_features, dtype
 ):
+    _with_seed(20260727)
     input_tensor = torch.randn(
         (dim0, dim1, in_features), dtype=dtype, device=flag_gems.device
     )
@@ -317,6 +348,7 @@ def test_wgrad_gemm_accum_fp32_vs_apex_3d(
 @pytest.mark.parametrize("batch, in_features, out_features", WGRAD_SHAPES_2D)
 @pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
 def test_wgrad_gemm_accum_fp16_vs_apex(batch, in_features, out_features, dtype):
+    _with_seed(20260728)
     input_tensor = torch.randn(
         (batch, in_features), dtype=dtype, device=flag_gems.device
     )
@@ -334,3 +366,44 @@ def test_wgrad_gemm_accum_fp16_vs_apex(batch, in_features, out_features, dtype):
     wgrad_gemm_accum_fp16(input_tensor, grad_output, gems_main_grad)
 
     _assert_vs_apex(gems_main_grad, apex_main_grad, dtype, reduce_dim=batch)
+
+
+@pytest.mark.wgrad_gemm_accum_fp32
+@pytest.mark.parametrize(
+    "batch, in_features, out_features",
+    [
+        (4, 3072, 4096),  # small batch, large hidden
+        (257, 129, 257),  # non-aligned dimensions
+        (1024, 64, 64),  # large K accumulation
+    ],
+)
+def test_wgrad_gemm_accum_fp32_cpu_ref_strict_with_tf32_off(
+    batch, in_features, out_features
+):
+    """Mathematical strictness check for fp32 inputs under full-fp32 GEMM."""
+    _with_seed(20260729)
+    input_tensor = torch.randn(
+        (batch, in_features), dtype=torch.float32, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (batch, out_features), dtype=torch.float32, device=flag_gems.device
+    )
+    main_grad = torch.randn(
+        (out_features, in_features), dtype=torch.float32, device=flag_gems.device
+    )
+
+    ref_main_grad = main_grad.clone()
+    _ref_wgrad_gemm_accum_fp32_cpu(input_tensor, grad_output, ref_main_grad)
+
+    res_main_grad = main_grad.clone()
+    _run_with_tf32_disabled(
+        lambda: wgrad_gemm_accum_fp32(input_tensor, grad_output, res_main_grad)
+    )
+
+    utils.gems_assert_close(
+        res_main_grad.cpu(),
+        ref_main_grad.cpu(),
+        torch.float32,
+        reduce_dim=batch,
+        atol=TF32_OFF_ATOL,
+    )
