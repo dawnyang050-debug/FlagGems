@@ -73,21 +73,11 @@ def _fused_addmm_fp32_accum(
 ) -> None:
     """Fused ``main_grad += mat1 @ mat2`` via cuBLAS (Apex-aligned).
 
-    Disable TF32 so fp32 weight-gradient accumulation matches full fp32
-    semantics on H20/A100-class GPUs and aligns with Apex / CPU reference.
+    Apex calls ``cublasGemmEx`` with ``CUBLAS_GEMM_DEFAULT_TENSOR_OP`` and does
+    not force TF32 off.  Use PyTorch ``addmm`` with default backend settings so
+    numerics track the Apex extension on the same device.
     """
-    if main_grad.is_cuda:
-        old_matmul_tf32 = torch.backends.cuda.matmul.allow_tf32
-        old_cudnn_tf32 = torch.backends.cudnn.allow_tf32
-        try:
-            torch.backends.cuda.matmul.allow_tf32 = False
-            torch.backends.cudnn.allow_tf32 = False
-            torch.addmm(main_grad, mat1, mat2, beta=1, alpha=1, out=main_grad)
-        finally:
-            torch.backends.cuda.matmul.allow_tf32 = old_matmul_tf32
-            torch.backends.cudnn.allow_tf32 = old_cudnn_tf32
-    else:
-        torch.addmm(main_grad, mat1, mat2, beta=1, alpha=1, out=main_grad)
+    torch.addmm(main_grad, mat1, mat2, beta=1, alpha=1, out=main_grad)
 
 
 def _accum_wgrad(

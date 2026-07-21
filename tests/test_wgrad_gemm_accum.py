@@ -41,6 +41,12 @@ FP32_ACCUM_INPUT_DTYPES = [torch.float32, torch.float16]
 if utils.bf16_is_supported:
     FP32_ACCUM_INPUT_DTYPES.append(torch.bfloat16)
 
+# fp32 activations use cuBLAS tensor-op GEMM (Apex path); CPU fp64 matmul is not
+# the right reference on TF32-capable GPUs.  Those cases are covered by vs_apex.
+FP32_ACCUM_CPU_REF_DTYPES = [torch.float16]
+if utils.bf16_is_supported:
+    FP32_ACCUM_CPU_REF_DTYPES.append(torch.bfloat16)
+
 FP16_ACCUM_INPUT_DTYPES = [torch.float16]
 if utils.bf16_is_supported:
     FP16_ACCUM_INPUT_DTYPES.append(torch.bfloat16)
@@ -103,7 +109,7 @@ def _assert_vs_apex(res, ref, dtype, *, reduce_dim):
 
 @pytest.mark.wgrad_gemm_accum_fp32
 @pytest.mark.parametrize("batch, in_features, out_features", WGRAD_SHAPES_2D)
-@pytest.mark.parametrize("dtype", FP32_ACCUM_INPUT_DTYPES)
+@pytest.mark.parametrize("dtype", FP32_ACCUM_CPU_REF_DTYPES)
 def test_wgrad_gemm_accum_fp32_2d(batch, in_features, out_features, dtype):
     input_tensor = torch.randn(
         (batch, in_features), dtype=dtype, device=flag_gems.device
@@ -128,7 +134,7 @@ def test_wgrad_gemm_accum_fp32_2d(batch, in_features, out_features, dtype):
 
 @pytest.mark.wgrad_gemm_accum_fp32
 @pytest.mark.parametrize("dim0, dim1, in_features, out_features", WGRAD_SHAPES_3D)
-@pytest.mark.parametrize("dtype", FP32_ACCUM_INPUT_DTYPES)
+@pytest.mark.parametrize("dtype", FP32_ACCUM_CPU_REF_DTYPES)
 def test_wgrad_gemm_accum_fp32_3d(dim0, dim1, in_features, out_features, dtype):
     input_tensor = torch.randn(
         (dim0, dim1, in_features), dtype=dtype, device=flag_gems.device
