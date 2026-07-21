@@ -17,6 +17,10 @@
 Matches Apex ``fused_weight_gradient_mlp_cuda`` semantics used by Megatron
 ``LinearWithGradAccumulationAndAsyncCommunication`` when
 ``gradient_accumulation_fusion`` is enabled.
+
+Mathematical semantics: ``main_grad += grad_output.T @ input`` after collapsing
+leading dimensions.  Verified against independent CPU fp64 references and,
+when available, Apex ``fused_weight_gradient_mlp_cuda``.
 """
 
 import logging
@@ -65,18 +69,20 @@ def _accum_wgrad(
     input_2d: torch.Tensor,
     main_grad: torch.Tensor,
     *,
-    compute_fp32: bool,
+    fp32_accum: bool,
 ) -> None:
     grad_output_T = grad_output_2d.t().contiguous()
-    if compute_fp32 and input_2d.dtype in (torch.float16, torch.bfloat16):
+    input_c = input_2d.contiguous()
+
+    if fp32_accum and input_c.dtype in (torch.float16, torch.bfloat16):
         wgrad = mm(
             grad_output_T.to(torch.float32),
-            input_2d.to(torch.float32),
+            input_c.to(torch.float32),
         )
-        main_grad.add_(wgrad)
     else:
-        wgrad = mm(grad_output_T, input_2d)
-        main_grad.add_(wgrad.to(main_grad.dtype))
+        wgrad = mm(grad_output_T, input_c)
+
+    main_grad.add_(wgrad)
 
 
 def wgrad_gemm_accum_fp32(
@@ -84,11 +90,7 @@ def wgrad_gemm_accum_fp32(
     grad_output: torch.Tensor,
     main_grad: torch.Tensor,
 ) -> None:
-    """Accumulate weight gradient into ``main_grad`` using fp32 storage.
-
-    Semantics align with Apex ``wgrad_gemm_accum_fp32``:
-    ``main_grad += grad_output.T @ input`` (with high-rank tensors collapsed).
-    """
+    """Accumulate weight gradient into ``main_grad`` using fp32 storage."""
     logger.debug("GEMS WGRAD_GEMM_ACCUM_FP32")
 
     _validate_device(input, grad_output, main_grad)
@@ -122,7 +124,7 @@ def wgrad_gemm_accum_fp32(
         grad_output_2d,
         input_2d,
         main_grad,
-        compute_fp32=True,
+        fp32_accum=True,
     )
 
 
@@ -131,10 +133,7 @@ def wgrad_gemm_accum_fp16(
     grad_output: torch.Tensor,
     main_grad: torch.Tensor,
 ) -> None:
-    """Accumulate weight gradient into ``main_grad`` using fp16/bf16 storage.
-
-    Semantics align with Apex ``wgrad_gemm_accum_fp16``.
-    """
+    """Accumulate weight gradient into ``main_grad`` using fp16/bf16 storage."""
     logger.debug("GEMS WGRAD_GEMM_ACCUM_FP16")
 
     _validate_device(input, grad_output, main_grad)
@@ -173,5 +172,5 @@ def wgrad_gemm_accum_fp16(
         grad_output_2d,
         input_2d,
         main_grad,
-        compute_fp32=False,
+        fp32_accum=False,
     )
