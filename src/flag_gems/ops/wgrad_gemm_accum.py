@@ -29,6 +29,8 @@ import torch
 
 import flag_gems
 
+from .addmm import addmm_out
+
 from .mm import mm
 
 logger = logging.getLogger(__name__)
@@ -75,14 +77,25 @@ def _accum_wgrad(
     input_c = input_2d.contiguous()
 
     if fp32_accum and input_c.dtype in (torch.float16, torch.bfloat16):
+        # Half/bfloat16 activations: promote for fp32 main_grad (Apex path).
         wgrad = mm(
             grad_output_T.to(torch.float32),
             input_c.to(torch.float32),
         )
+        main_grad.add_(wgrad)
+    elif fp32_accum:
+        # fp32 activations: fused beta=1 GEMM, matching Apex cuBLAS accumulation.
+        addmm_out(
+            main_grad,
+            grad_output_T,
+            input_c,
+            beta=1,
+            alpha=1,
+            out=main_grad,
+        )
     else:
         wgrad = mm(grad_output_T, input_c)
-
-    main_grad.add_(wgrad)
+        main_grad.add_(wgrad)
 
 
 def wgrad_gemm_accum_fp32(

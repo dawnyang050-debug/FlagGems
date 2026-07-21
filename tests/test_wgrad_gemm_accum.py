@@ -63,20 +63,24 @@ def _collapse_to_2d(input_tensor, grad_output):
 
 def _ref_wgrad_gemm_accum_fp32_cpu(input_tensor, grad_output, main_grad):
     """Independent CPU fp64 matmul reference (not GPU/Triton)."""
-    ref_input = utils.to_reference(input_tensor, True).double()
-    ref_grad_output = utils.to_reference(grad_output, True).double()
+    ref_input = input_tensor.detach().cpu().double()
+    ref_grad_output = grad_output.detach().cpu().double()
     input_2d, grad_output_2d = _collapse_to_2d(ref_input, ref_grad_output)
     wgrad = grad_output_2d.t().contiguous() @ input_2d
-    main_grad.add_(wgrad.to(torch.float32))
+    main_grad_cpu = main_grad.detach().cpu().clone()
+    main_grad_cpu.add_(wgrad.to(torch.float32))
+    main_grad.copy_(main_grad_cpu)
 
 
 def _ref_wgrad_gemm_accum_fp16_cpu(input_tensor, grad_output, main_grad, dtype):
     """Independent CPU fp64 matmul reference, cast to half storage."""
-    ref_input = utils.to_reference(input_tensor, True).double()
-    ref_grad_output = utils.to_reference(grad_output, True).double()
+    ref_input = input_tensor.detach().cpu().double()
+    ref_grad_output = grad_output.detach().cpu().double()
     input_2d, grad_output_2d = _collapse_to_2d(ref_input, ref_grad_output)
     wgrad = grad_output_2d.t().contiguous() @ input_2d
-    main_grad.add_(wgrad.to(dtype))
+    main_grad_cpu = main_grad.detach().cpu().clone()
+    main_grad_cpu.add_(wgrad.to(dtype))
+    main_grad.copy_(main_grad_cpu)
 
 
 def _assert_vs_cpu_ref(res, ref, dtype, *, reduce_dim):
@@ -191,7 +195,7 @@ def test_wgrad_gemm_accum_fp32_accumulates_twice():
     wgrad_gemm_accum_fp32(inp1, gout1, res_main)
     wgrad_gemm_accum_fp32(inp2, gout2, res_main)
 
-    _assert_vs_cpu_ref(res_main, ref_main, torch.float32, reduce_dim=batch)
+    _assert_vs_cpu_ref(res_main, ref_main, torch.float32, reduce_dim=2 * batch)
 
 
 @pytest.mark.wgrad_gemm_accum_fp32
