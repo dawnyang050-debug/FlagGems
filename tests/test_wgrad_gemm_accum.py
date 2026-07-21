@@ -84,13 +84,18 @@ def _ref_wgrad_gemm_accum_fp16_cpu(input_tensor, grad_output, main_grad, dtype):
 
 
 def _assert_vs_cpu_ref(res, ref, dtype, *, reduce_dim):
+    # Independent CPU fp64 reference; always compare on CPU.
     utils.gems_assert_close(
-        res, ref, dtype, reduce_dim=reduce_dim, atol=DEFAULT_ATOL
+        res.cpu(),
+        ref.cpu(),
+        dtype,
+        reduce_dim=reduce_dim,
+        atol=DEFAULT_ATOL,
     )
 
 
 def _assert_vs_apex(res, ref, dtype, *, reduce_dim):
-    """Apex is the deployment target; use strict default tolerance."""
+    """Apex is the deployment target; compare on device, strict tolerance."""
     utils.gems_assert_close(
         res, ref, dtype, reduce_dim=reduce_dim, atol=DEFAULT_ATOL
     )
