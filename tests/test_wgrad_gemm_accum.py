@@ -131,6 +131,37 @@ def _run_with_tf32_disabled(fn):
         torch.backends.cudnn.allow_tf32 = old_cudnn_tf32
 
 
+def _as_non_contiguous_2d(contiguous_2d: torch.Tensor) -> torch.Tensor:
+    """Build a non-contiguous (B, F) view with identical values."""
+    batch, feat = contiguous_2d.shape
+    nc = torch.empty(
+        feat,
+        batch,
+        dtype=contiguous_2d.dtype,
+        device=contiguous_2d.device,
+    ).transpose(0, 1)
+    nc.copy_(contiguous_2d)
+    assert not nc.is_contiguous()
+    assert nc.shape == contiguous_2d.shape
+    return nc
+
+
+def _as_non_contiguous_3d(contiguous_3d: torch.Tensor) -> torch.Tensor:
+    """Build a non-contiguous (D0, D1, F) view with identical values."""
+    dim0, dim1, feat = contiguous_3d.shape
+    nc = torch.empty(
+        dim1,
+        dim0,
+        feat,
+        dtype=contiguous_3d.dtype,
+        device=contiguous_3d.device,
+    ).transpose(0, 1)
+    nc.copy_(contiguous_3d)
+    assert not nc.is_contiguous()
+    assert nc.shape == contiguous_3d.shape
+    return nc
+
+
 @pytest.mark.wgrad_gemm_accum_fp32
 @pytest.mark.parametrize("batch, in_features, out_features", WGRAD_SHAPES_2D)
 @pytest.mark.parametrize("dtype", FP32_ACCUM_CPU_REF_DTYPES)
@@ -406,4 +437,171 @@ def test_wgrad_gemm_accum_fp32_cpu_ref_strict_with_tf32_off(
         torch.float32,
         reduce_dim=batch,
         atol=TF32_OFF_ATOL,
+    )
+
+
+@pytest.mark.wgrad_gemm_accum_fp32
+@pytest.mark.parametrize("batch, in_features, out_features", WGRAD_SHAPES_2D)
+@pytest.mark.parametrize("dtype", FP32_ACCUM_CPU_REF_DTYPES)
+@pytest.mark.parametrize("layout", ["input_nc", "grad_output_nc", "both_nc"])
+def test_wgrad_gemm_accum_fp32_2d_non_contiguous(
+    batch, in_features, out_features, dtype, layout
+):
+    """Non-contiguous 2D inputs must match contiguous results and CPU ref."""
+    _with_seed(20260730)
+    input_c = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output_c = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad_seed = torch.randn(
+        (out_features, in_features), dtype=torch.float32, device=flag_gems.device
+    )
+
+    input_tensor = input_c
+    grad_output = grad_output_c
+    if layout in ("input_nc", "both_nc"):
+        input_tensor = _as_non_contiguous_2d(input_c)
+    if layout in ("grad_output_nc", "both_nc"):
+        grad_output = _as_non_contiguous_2d(grad_output_c)
+
+    ref_main = main_grad_seed.clone()
+    _ref_wgrad_gemm_accum_fp32_cpu(input_tensor, grad_output, ref_main)
+
+    res_contig = main_grad_seed.clone()
+    wgrad_gemm_accum_fp32(input_c, grad_output_c, res_contig)
+
+    res_nc = main_grad_seed.clone()
+    wgrad_gemm_accum_fp32(input_tensor, grad_output, res_nc)
+
+    _assert_vs_cpu_ref(res_nc, ref_main, torch.float32, reduce_dim=batch)
+    utils.gems_assert_close(
+        res_nc,
+        res_contig,
+        torch.float32,
+        reduce_dim=batch,
+        atol=DEFAULT_ATOL,
+    )
+
+
+@pytest.mark.wgrad_gemm_accum_fp32
+@pytest.mark.parametrize("dim0, dim1, in_features, out_features", WGRAD_SHAPES_3D)
+@pytest.mark.parametrize("dtype", FP32_ACCUM_CPU_REF_DTYPES)
+def test_wgrad_gemm_accum_fp32_3d_non_contiguous(
+    dim0, dim1, in_features, out_features, dtype
+):
+    """Non-contiguous 3D inputs must match contiguous results and CPU ref."""
+    _with_seed(20260731)
+    input_c = torch.randn(
+        (dim0, dim1, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output_c = torch.randn(
+        (dim0, dim1, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad_seed = torch.randn(
+        (out_features, in_features), dtype=torch.float32, device=flag_gems.device
+    )
+
+    input_tensor = _as_non_contiguous_3d(input_c)
+    grad_output = _as_non_contiguous_3d(grad_output_c)
+
+    ref_main = main_grad_seed.clone()
+    _ref_wgrad_gemm_accum_fp32_cpu(input_tensor, grad_output, ref_main)
+
+    res_contig = main_grad_seed.clone()
+    wgrad_gemm_accum_fp32(input_c, grad_output_c, res_contig)
+
+    res_nc = main_grad_seed.clone()
+    wgrad_gemm_accum_fp32(input_tensor, grad_output, res_nc)
+
+    _assert_vs_cpu_ref(
+        res_nc, ref_main, torch.float32, reduce_dim=dim0 * dim1
+    )
+    utils.gems_assert_close(
+        res_nc,
+        res_contig,
+        torch.float32,
+        reduce_dim=dim0 * dim1,
+        atol=DEFAULT_ATOL,
+    )
+
+
+@pytest.mark.wgrad_gemm_accum_fp32
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+@pytest.mark.parametrize("batch, in_features, out_features", WGRAD_SHAPES_2D[:1])
+@pytest.mark.parametrize("dtype", FP32_ACCUM_INPUT_DTYPES)
+@pytest.mark.parametrize("layout", ["input_nc", "grad_output_nc", "both_nc"])
+def test_wgrad_gemm_accum_fp32_vs_apex_non_contiguous(
+    batch, in_features, out_features, dtype, layout
+):
+    """Non-contiguous inputs must match Apex on the same logical tensors."""
+    _with_seed(20260732)
+    input_c = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output_c = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad_seed = torch.randn(
+        (out_features, in_features), dtype=torch.float32, device=flag_gems.device
+    )
+
+    input_tensor = input_c
+    grad_output = grad_output_c
+    if layout in ("input_nc", "both_nc"):
+        input_tensor = _as_non_contiguous_2d(input_c)
+    if layout in ("grad_output_nc", "both_nc"):
+        grad_output = _as_non_contiguous_2d(grad_output_c)
+
+    apex_main = main_grad_seed.clone()
+    gems_main = main_grad_seed.clone()
+
+    apex_wgrad.wgrad_gemm_accum_fp32(input_tensor, grad_output, apex_main)
+    wgrad_gemm_accum_fp32(input_tensor, grad_output, gems_main)
+
+    _assert_vs_apex(gems_main, apex_main, torch.float32, reduce_dim=batch)
+
+
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.parametrize("batch, in_features, out_features", WGRAD_SHAPES_2D[:1])
+@pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
+@pytest.mark.parametrize("layout", ["input_nc", "grad_output_nc", "both_nc"])
+def test_wgrad_gemm_accum_fp16_2d_non_contiguous(
+    batch, in_features, out_features, dtype, layout
+):
+    """fp16 accum path: non-contiguous inputs match contiguous and CPU ref."""
+    _with_seed(20260733)
+    input_c = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output_c = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad_seed = torch.randn(
+        (out_features, in_features), dtype=dtype, device=flag_gems.device
+    )
+
+    input_tensor = input_c
+    grad_output = grad_output_c
+    if layout in ("input_nc", "both_nc"):
+        input_tensor = _as_non_contiguous_2d(input_c)
+    if layout in ("grad_output_nc", "both_nc"):
+        grad_output = _as_non_contiguous_2d(grad_output_c)
+
+    ref_main = main_grad_seed.clone()
+    _ref_wgrad_gemm_accum_fp16_cpu(input_tensor, grad_output, ref_main, dtype)
+
+    res_contig = main_grad_seed.clone()
+    wgrad_gemm_accum_fp16(input_c, grad_output_c, res_contig)
+
+    res_nc = main_grad_seed.clone()
+    wgrad_gemm_accum_fp16(input_tensor, grad_output, res_nc)
+
+    _assert_vs_cpu_ref(res_nc, ref_main, dtype, reduce_dim=batch)
+    utils.gems_assert_close(
+        res_nc, res_contig, dtype, reduce_dim=batch, atol=DEFAULT_ATOL
     )
