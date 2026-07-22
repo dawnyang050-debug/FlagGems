@@ -61,11 +61,11 @@ TF32_OFF_ATOL = 1e-6
 
 def _collapse_to_2d(input_tensor, grad_output):
     if input_tensor.dim() > 2:
-        input_2d = input_tensor.view(-1, input_tensor.size(-1))
+        input_2d = input_tensor.reshape(-1, input_tensor.size(-1))
     else:
         input_2d = input_tensor
     if grad_output.dim() > 2:
-        grad_output_2d = grad_output.view(-1, grad_output.size(-1))
+        grad_output_2d = grad_output.reshape(-1, grad_output.size(-1))
     else:
         grad_output_2d = grad_output
     return input_2d, grad_output_2d
@@ -76,7 +76,7 @@ def _ref_wgrad_gemm_accum_fp32_cpu(input_tensor, grad_output, main_grad):
     ref_input = input_tensor.detach().cpu().double()
     ref_grad_output = grad_output.detach().cpu().double()
     input_2d, grad_output_2d = _collapse_to_2d(ref_input, ref_grad_output)
-    wgrad_fp32 = (grad_output_2d.t().contiguous() @ input_2d).float()
+    wgrad_fp32 = (grad_output_2d.t().contiguous() @ input_2d.contiguous()).float()
     main_grad_fp32 = main_grad.detach().cpu().float().clone()
     main_grad_fp32.add_(wgrad_fp32)
     main_grad.copy_(main_grad_fp32.to(device=main_grad.device, dtype=main_grad.dtype))
@@ -87,7 +87,7 @@ def _ref_wgrad_gemm_accum_fp16_cpu(input_tensor, grad_output, main_grad, dtype):
     ref_input = input_tensor.detach().cpu().double()
     ref_grad_output = grad_output.detach().cpu().double()
     input_2d, grad_output_2d = _collapse_to_2d(ref_input, ref_grad_output)
-    wgrad = grad_output_2d.t().contiguous() @ input_2d
+    wgrad = grad_output_2d.t().contiguous() @ input_2d.contiguous()
     main_grad_cpu = main_grad.detach().cpu().clone()
     main_grad_cpu.add_(wgrad.to(dtype))
     main_grad.copy_(main_grad_cpu)
@@ -538,7 +538,7 @@ def test_wgrad_gemm_accum_fp32_3d_non_contiguous(
 def test_wgrad_gemm_accum_fp32_vs_apex_non_contiguous(
     batch, in_features, out_features, dtype, layout
 ):
-    """Non-contiguous inputs must match Apex on the same logical tensors."""
+    """Gems on non-contiguous views must match Apex on contiguous equivalents."""
     _with_seed(20260732)
     input_c = torch.randn(
         (batch, in_features), dtype=dtype, device=flag_gems.device
@@ -560,7 +560,8 @@ def test_wgrad_gemm_accum_fp32_vs_apex_non_contiguous(
     apex_main = main_grad_seed.clone()
     gems_main = main_grad_seed.clone()
 
-    apex_wgrad.wgrad_gemm_accum_fp32(input_tensor, grad_output, apex_main)
+    # Apex uses tensor.view in its CUDA stub; feed contiguous equivalents.
+    apex_wgrad.wgrad_gemm_accum_fp32(input_c, grad_output_c, apex_main)
     wgrad_gemm_accum_fp32(input_tensor, grad_output, gems_main)
 
     _assert_vs_apex(gems_main, apex_main, torch.float32, reduce_dim=batch)

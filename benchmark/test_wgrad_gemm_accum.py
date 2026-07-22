@@ -35,11 +35,11 @@ WGRAD_GEMM_ACCUM_SHAPES = [
 
 def _collapse_to_2d(input_tensor, grad_output):
     if input_tensor.dim() > 2:
-        input_2d = input_tensor.view(-1, input_tensor.size(-1))
+        input_2d = input_tensor.reshape(-1, input_tensor.size(-1))
     else:
         input_2d = input_tensor
     if grad_output.dim() > 2:
-        grad_output_2d = grad_output.view(-1, grad_output.size(-1))
+        grad_output_2d = grad_output.reshape(-1, grad_output.size(-1))
     else:
         grad_output_2d = grad_output
     return input_2d, grad_output_2d

@@ -38,12 +38,12 @@ logger = logging.getLogger(__name__)
 
 def _collapse_to_2d(input: torch.Tensor, grad_output: torch.Tensor):
     if input.dim() > 2:
-        input_2d = input.view(-1, input.size(-1))
+        input_2d = input.reshape(-1, input.size(-1))
     else:
         input_2d = input
 
     if grad_output.dim() > 2:
-        grad_output_2d = grad_output.view(-1, grad_output.size(-1))
+        grad_output_2d = grad_output.reshape(-1, grad_output.size(-1))
     else:
         grad_output_2d = grad_output
 
