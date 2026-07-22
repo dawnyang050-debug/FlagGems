@@ -1,6 +1,5 @@
 import math
 
-import math
 import pytest
 import torch
 import torch.nn.functional as F
@@ -124,9 +123,9 @@ def test_hadamard_transform(dim, dtype):
 
     out_err = (out.float() - out_ref).abs().max().item()
     pt_err = (out_pt.float() - out_ref).abs().max().item()
-    assert out_err < 2 * pt_err + atol, (
-        f"forward dim={dim} dtype={dtype}: out_err={out_err}, pt_err={pt_err}, atol={atol}"
-    )
+    assert (
+        out_err < 2 * pt_err + atol
+    ), f"forward dim={dim} dtype={dtype}: out_err={out_err}, pt_err={pt_err}, atol={atol}"
 
     g = torch.randn_like(out)
     out.backward(g)
@@ -135,9 +134,9 @@ def test_hadamard_transform(dim, dtype):
 
     dx_err = (x.grad.float() - x_ref.grad.float()).abs().max().item()
     dx_pt_err = (x_pt.grad.float() - x_ref.grad.float()).abs().max().item()
-    assert dx_err < 2 * dx_pt_err + atol, (
-        f"backward dim={dim} dtype={dtype}: dx_err={dx_err}, dx_pt_err={dx_pt_err}, atol={atol}"
-    )
+    assert (
+        dx_err < 2 * dx_pt_err + atol
+    ), f"backward dim={dim} dtype={dtype}: dx_err={dx_err}, dx_pt_err={dx_pt_err}, atol={atol}"
 
 
 def _ref_mn(x: torch.Tensor, M: int) -> torch.Tensor:
@@ -176,7 +175,10 @@ def _ref_mn(x: torch.Tensor, M: int) -> torch.Tensor:
 
     ym = torch.stack(rows, dim=1).reshape(batch * M, n_cols)  # keep fp32
     ym = flag_gems.hadamard_transform(ym)  # FHT in fp32
-    return ym.to(orig_dtype).reshape(*leading, dim)
+    out = ym.to(orig_dtype).reshape(*leading, dim)
+    if cfg.TO_CPU:
+        out = out.cpu()
+    return out
 
 
 @pytest.mark.hadamard_transform_mn
