@@ -260,7 +260,7 @@ def test_wgrad_gemm_accum_fp16_2d(batch, in_features, out_features, dtype):
         (out_features, in_features), dtype=dtype, device=flag_gems.device
     )
 
-    ref_main_grad = utils.to_reference(main_grad, True).clone()
+    ref_main_grad = main_grad.clone()
     res_main_grad = main_grad.clone()
 
     _ref_wgrad_gemm_accum_fp16_cpu(input_tensor, grad_output, ref_main_grad, dtype)
