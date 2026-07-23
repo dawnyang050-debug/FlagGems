@@ -830,6 +830,64 @@ def _large_activation_scale(dtype):
     return 1e3
 
 
+def _make_fp16_accum_boundary_tensors(
+    case, *, batch, in_features, out_features, dtype, device, seed
+):
+    """Build tensors for fp16/bf16 accum numeric boundary cases."""
+    _with_seed(seed)
+    if case == "zeros":
+        input_tensor = torch.zeros(
+            (batch, in_features), dtype=dtype, device=device
+        )
+        grad_output = torch.zeros(
+            (batch, out_features), dtype=dtype, device=device
+        )
+        main_grad = torch.randn(
+            (out_features, in_features), dtype=dtype, device=device
+        )
+    elif case == "large_1e3":
+        scale = _large_activation_scale(dtype)
+        input_tensor = (
+            torch.randn((batch, in_features), dtype=dtype, device=device) * scale
+        )
+        grad_output = (
+            torch.randn((batch, out_features), dtype=dtype, device=device) * scale
+        )
+        main_grad = (
+            torch.randn((out_features, in_features), dtype=dtype, device=device)
+            * scale
+        )
+    elif case == "small_1e-5":
+        scale = 1e-5
+        input_tensor = (
+            torch.randn((batch, in_features), dtype=dtype, device=device) * scale
+        )
+        grad_output = (
+            torch.randn((batch, out_features), dtype=dtype, device=device) * scale
+        )
+        main_grad = (
+            torch.randn((out_features, in_features), dtype=dtype, device=device)
+            * scale
+        )
+    elif case == "mixed_signs":
+        input_tensor = torch.randn(
+            (batch, in_features), dtype=dtype, device=device
+        )
+        grad_output = torch.randn(
+            (batch, out_features), dtype=dtype, device=device
+        )
+        main_grad = torch.randn(
+            (out_features, in_features), dtype=dtype, device=device
+        )
+        input_tensor[: max(batch // 2, 1)].neg_()
+        grad_output[max(batch // 2, 1) :].neg_()
+        main_grad[: max(out_features // 2, 1)].neg_()
+    else:
+        raise ValueError(f"Unknown numeric boundary case: {case}")
+
+    return input_tensor, grad_output, main_grad
+
+
 @pytest.mark.wgrad_gemm_accum_fp16
 @pytest.mark.parametrize(
     "case",
@@ -839,71 +897,15 @@ def _large_activation_scale(dtype):
 def test_wgrad_gemm_accum_fp16_numeric_boundaries(case, dtype):
     """fp16/bf16 accum path: same boundary coverage vs CPU fp64 ref."""
     batch, in_features, out_features = 8, 32, 64
-    _with_seed(20260737)
-
-    if case == "zeros":
-        input_tensor = torch.zeros(
-            (batch, in_features), dtype=dtype, device=flag_gems.device
-        )
-        grad_output = torch.zeros(
-            (batch, out_features), dtype=dtype, device=flag_gems.device
-        )
-        main_grad = torch.randn(
-            (out_features, in_features), dtype=dtype, device=flag_gems.device
-        )
-    elif case == "large_1e3":
-        scale = _large_activation_scale(dtype)
-        input_tensor = (
-            torch.randn(
-                (batch, in_features), dtype=dtype, device=flag_gems.device
-            )
-            * scale
-        )
-        grad_output = (
-            torch.randn(
-                (batch, out_features), dtype=dtype, device=flag_gems.device
-            )
-            * scale
-        )
-        main_grad = (
-            torch.randn(
-                (out_features, in_features), dtype=dtype, device=flag_gems.device
-            )
-            * scale
-        )
-    elif case == "small_1e-5":
-        scale = 1e-5
-        input_tensor = (
-            torch.randn(
-                (batch, in_features), dtype=dtype, device=flag_gems.device
-            )
-            * scale
-        )
-        grad_output = (
-            torch.randn(
-                (batch, out_features), dtype=dtype, device=flag_gems.device
-            )
-            * scale
-        )
-        main_grad = (
-            torch.randn(
-                (out_features, in_features), dtype=dtype, device=flag_gems.device
-            )
-            * scale
-        )
-    else:  # mixed_signs
-        input_tensor = torch.randn(
-            (batch, in_features), dtype=dtype, device=flag_gems.device
-        )
-        grad_output = torch.randn(
-            (batch, out_features), dtype=dtype, device=flag_gems.device
-        )
-        main_grad = torch.randn(
-            (out_features, in_features), dtype=dtype, device=flag_gems.device
-        )
-        input_tensor[: max(batch // 2, 1)].neg_()
-        grad_output[max(batch // 2, 1) :].neg_()
-        main_grad[: max(out_features // 2, 1)].neg_()
+    input_tensor, grad_output, main_grad = _make_fp16_accum_boundary_tensors(
+        case,
+        batch=batch,
+        in_features=in_features,
+        out_features=out_features,
+        dtype=dtype,
+        device=flag_gems.device,
+        seed=20260737,
+    )
 
     ref_main = main_grad.clone()
     res_main = main_grad.clone()
@@ -919,4 +921,44 @@ def test_wgrad_gemm_accum_fp16_numeric_boundaries(case, dtype):
     else:
         _assert_boundary_close(
             res_main, ref_main, dtype, reduce_dim=batch, case=case
+        )
+
+
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+@pytest.mark.parametrize(
+    "case",
+    ["zeros", "large_1e3", "small_1e-5", "mixed_signs"],
+)
+@pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp16_vs_apex_numeric_boundaries(case, dtype):
+    """fp16/bf16 accum boundary values must also match Apex on the same tensors."""
+    batch, in_features, out_features = 8, 32, 64
+    input_tensor, grad_output, main_grad = _make_fp16_accum_boundary_tensors(
+        case,
+        batch=batch,
+        in_features=in_features,
+        out_features=out_features,
+        dtype=dtype,
+        device=flag_gems.device,
+        seed=20260738,
+    )
+
+    apex_main = main_grad.clone()
+    gems_main = main_grad.clone()
+    apex_wgrad.wgrad_gemm_accum_fp16(input_tensor, grad_output, apex_main)
+    wgrad_gemm_accum_fp16(input_tensor, grad_output, gems_main)
+
+    assert torch.isfinite(gems_main).all()
+    assert torch.isfinite(apex_main).all()
+
+    if case == "zeros":
+        assert torch.equal(gems_main, main_grad)
+        assert torch.equal(apex_main, main_grad)
+    else:
+        _assert_boundary_close(
+            gems_main, apex_main, dtype, reduce_dim=batch, case=case
         )
