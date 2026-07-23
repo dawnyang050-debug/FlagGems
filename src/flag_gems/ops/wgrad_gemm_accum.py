@@ -88,14 +88,16 @@ def _matmul_operands(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return ``(grad_output.T, input)`` for GEMM.
 
-    Contiguous inputs keep a transpose view so cuBLAS can use ``OP_T`` without
-    materializing a copy.  Non-contiguous layouts are made dense first so
-    results match the contiguous path (Apex stub also effectively requires
-    well-defined row-major storage after collapse).
+    Always densify first, then take a transpose *view*.  That way contiguous and
+    non-contiguous callers share one cuBLAS ``OP_T`` path (bit-identical), instead
+    of mixing ``OP_T`` with a materialized ``t().contiguous()`` which diverges in
+    fp16/bf16.
     """
-    if grad_output_2d.is_contiguous() and input_2d.is_contiguous():
-        return grad_output_2d.t(), input_2d
-    return grad_output_2d.t().contiguous(), input_2d.contiguous()
+    if not grad_output_2d.is_contiguous():
+        grad_output_2d = grad_output_2d.contiguous()
+    if not input_2d.is_contiguous():
+        input_2d = input_2d.contiguous()
+    return grad_output_2d.t(), input_2d
 
 
 def _accum_wgrad(
