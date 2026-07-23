@@ -26,6 +26,9 @@ try:
 except ImportError:
     HAS_APEX_WGRAD = False
 
+# Table header defaults to "Torch Latency"; rename when baseline is Apex.
+_BASELINE_LABEL = "Apex" if HAS_APEX_WGRAD else "PyTorch ref"
+
 WGRAD_GEMM_ACCUM_SHAPES = [
     (64, 512),
     (128, 1024),
@@ -83,6 +86,26 @@ def _gems_wgrad_gemm_accum_fp16(input_tensor, grad_output, main_grad_seed):
     return main_grad
 
 
+def _run_with_baseline_header(bench):
+    """Print baseline name and relabel the default 'Torch Latency' column."""
+    print(f"[wgrad_gemm_accum] benchmark baseline: {_BASELINE_LABEL}")
+    original_str = base.BenchmarkResult.__str__
+    label = f"{_BASELINE_LABEL} Latency (ms)"
+
+    def labeled_str(result):
+        return (
+            original_str(result)
+            .replace("Torch Latency (ms)", label)
+            .replace("Torch GBPS ", f"{_BASELINE_LABEL} GBPS ")
+        )
+
+    base.BenchmarkResult.__str__ = labeled_str
+    try:
+        bench.run()
+    finally:
+        base.BenchmarkResult.__str__ = original_str
+
+
 class WgradGemmAccumFp32Benchmark(base.Benchmark):
     def set_shapes(self, shape_file_path=None):
         self.shapes = WGRAD_GEMM_ACCUM_SHAPES
@@ -134,7 +157,7 @@ def test_wgrad_gemm_accum_fp32():
         dtypes=[torch.float16, torch.float32],
     )
     bench.set_gems(_gems_wgrad_gemm_accum_fp32)
-    bench.run()
+    _run_with_baseline_header(bench)
 
 
 @pytest.mark.wgrad_gemm_accum_fp16
@@ -150,4 +173,4 @@ def test_wgrad_gemm_accum_fp16():
         dtypes=[torch.float16],
     )
     bench.set_gems(_gems_wgrad_gemm_accum_fp16)
-    bench.run()
+    _run_with_baseline_header(bench)
