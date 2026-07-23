@@ -1074,3 +1074,128 @@ def test_wgrad_gemm_accum_fp16_vs_apex_numeric_boundaries(case, dtype):
         _assert_boundary_close(
             gems_main, apex_main, dtype, reduce_dim=batch, case=case
         )
+
+
+def _make_nan_inf_tensors(
+    case,
+    *,
+    batch,
+    in_features,
+    out_features,
+    input_dtype,
+    main_dtype,
+    device,
+    seed,
+):
+    """Build tensors with a single NaN/Inf injected for propagation checks."""
+    _with_seed(seed)
+    input_tensor = torch.randn(
+        (batch, in_features), dtype=input_dtype, device=device
+    )
+    grad_output = torch.randn(
+        (batch, out_features), dtype=input_dtype, device=device
+    )
+    main_grad = torch.randn(
+        (out_features, in_features), dtype=main_dtype, device=device
+    )
+
+    if case == "nan_in_input":
+        input_tensor[0, 0] = float("nan")
+    elif case == "nan_in_grad_output":
+        grad_output[0, 0] = float("nan")
+    elif case == "inf_in_input":
+        input_tensor[0, 0] = float("inf")
+    elif case == "inf_in_grad_output":
+        grad_output[0, 0] = float("inf")
+    elif case == "neg_inf_in_input":
+        input_tensor[0, 0] = float("-inf")
+    elif case == "nan_in_main_grad":
+        main_grad[0, 0] = float("nan")
+    elif case == "inf_in_main_grad":
+        main_grad[0, 0] = float("inf")
+    else:
+        raise ValueError(f"unknown nan/inf case: {case}")
+    return input_tensor, grad_output, main_grad
+
+
+_NAN_INF_CASES = [
+    "nan_in_input",
+    "nan_in_grad_output",
+    "inf_in_input",
+    "inf_in_grad_output",
+    "neg_inf_in_input",
+    "nan_in_main_grad",
+    "inf_in_main_grad",
+]
+
+
+def _assert_vs_apex_equal_nan(res, ref, dtype, *, reduce_dim):
+    """Match Apex including NaN/Inf positions (GEMM propagation semantics)."""
+    utils.gems_assert_close(
+        res,
+        ref,
+        dtype,
+        equal_nan=True,
+        reduce_dim=reduce_dim,
+        atol=DEFAULT_ATOL,
+    )
+
+
+@pytest.mark.wgrad_gemm_accum_fp32
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+@pytest.mark.parametrize("case", _NAN_INF_CASES)
+@pytest.mark.parametrize("dtype", FP32_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp32_vs_apex_nan_inf(case, dtype):
+    """NaN/Inf must propagate the same way as Apex on the fp32-accum path."""
+    batch, in_features, out_features = 8, 32, 64
+    input_tensor, grad_output, main_grad = _make_nan_inf_tensors(
+        case,
+        batch=batch,
+        in_features=in_features,
+        out_features=out_features,
+        input_dtype=dtype,
+        main_dtype=torch.float32,
+        device=flag_gems.device,
+        seed=20260743,
+    )
+
+    apex_main = main_grad.clone()
+    gems_main = main_grad.clone()
+    apex_wgrad.wgrad_gemm_accum_fp32(input_tensor, grad_output, apex_main)
+    wgrad_gemm_accum_fp32(input_tensor, grad_output, gems_main)
+
+    _assert_vs_apex_equal_nan(
+        gems_main, apex_main, torch.float32, reduce_dim=batch
+    )
+
+
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+@pytest.mark.parametrize("case", _NAN_INF_CASES)
+@pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp16_vs_apex_nan_inf(case, dtype):
+    """NaN/Inf must propagate the same way as Apex on the fp16/bf16 accum path."""
+    batch, in_features, out_features = 8, 32, 64
+    input_tensor, grad_output, main_grad = _make_nan_inf_tensors(
+        case,
+        batch=batch,
+        in_features=in_features,
+        out_features=out_features,
+        input_dtype=dtype,
+        main_dtype=dtype,
+        device=flag_gems.device,
+        seed=20260744,
+    )
+
+    apex_main = main_grad.clone()
+    gems_main = main_grad.clone()
+    apex_wgrad.wgrad_gemm_accum_fp16(input_tensor, grad_output, apex_main)
+    wgrad_gemm_accum_fp16(input_tensor, grad_output, gems_main)
+
+    _assert_vs_apex_equal_nan(gems_main, apex_main, dtype, reduce_dim=batch)

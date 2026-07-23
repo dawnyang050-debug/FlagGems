@@ -107,7 +107,8 @@ Megatron LinearWithGradAccumulationAndAsyncCommunication.backward
 |----|--------|------|
 | 请示老师是否收口 / 接 Megatron | P0 | 球在老师 |
 | ~~统一 `to_reference(..., True)`~~ | ~~P1~~ | **已改** `main_grad.clone()` |
-| ~~空 batch / `main_grad` 非连续~~ | ~~P1~~ | **已补**（见 6.3）；仍缺 NaN/Inf |
+| ~~空 batch / `main_grad` 非连续~~ | ~~P1~~ | **已补**（见 6.3） |
+| ~~NaN/Inf 传播 vs Apex~~ | ~~P1~~ | **已补**；实现无改，测试对齐 Apex |
 | ctypes GemmEx → 正式 CUDA 扩展 | P0 工程化 | 能跑且约 1×，但找 `.so`+魔数不够「产品级」 |
 | 个人交接以外的正式 PR 节奏 | 听老师 | 话术里不提前说 push/PR |
 
@@ -233,7 +234,7 @@ non-contiguous 坑：不能对连续走 `OP_T` view、对非连续走 `t().conti
 
 - ~~`test_wgrad_gemm_accum_fp16_2d` 的 `to_reference(..., True)`~~：**已改为 `main_grad.clone()`**（2026-07-23）  
 - ~~空 batch / `main_grad` 非连续~~：**已补**（实现：`K==0` early return；fp16 accum 对非连续 `main_grad` densify 再 `copy_`；测试：`empty_batch` / `main_grad_non_contiguous`）  
-- 仍缺：NaN/Inf 策略  
+- ~~NaN/Inf 传播~~：**已补 vs Apex**（`*_vs_apex_nan_inf`；口径：与 Apex/cuBLAS GEMM 一致传播，不 scrub）
 
 ### 6.4 跑正确性
 
@@ -323,7 +324,7 @@ pytest benchmark/test_wgrad_gemm_accum.py -v -s --tb=short 2>&1 | tee wgrad_benc
 
 **当前适合的请示**：
 
-> 正确性全过；性能（含 bf16）相对 Apex 大约 1×；空 batch / main_grad 非连续也已补。请问这块先收，还是接训练路径 / 再补 NaN？
+> 正确性全过；性能（含 bf16）相对 Apex 大约 1×；空 batch / main_grad 非连续 / NaN·Inf 传播（vs Apex）也已补。请问这块先收，还是接训练路径？
 
 ---
 
@@ -355,8 +356,8 @@ pytest benchmark/test_wgrad_gemm_accum.py -v -s --tb=short 2>&1 | tee wgrad_benc
 
 1. 读本文件第 3、5、8 节确认状态  
 2. 容器 `git status` / `git log -1` 确认与本机分支一致  
-3. **本机改动 sync 到容器后**，先跑空 batch / nc main_grad 新测，再全量正确性  
-4. **等老师回「收 / 接训练 / 再补 NaN」**；未回前可选：NaN/Inf 策略、GemmEx 工程化  
+3. **本机改动 sync 到容器后**，先跑 `nan_inf` 新测，再全量正确性  
+4. **等老师回「收 / 接训练」**；未回前可选：大 shape correctness、重复调用稳定性、GemmEx 工程化  
 5. 若老师要求接 Megatron：先确认允许，再改调用点，**仍 GPU4 only**  
 
 ---
