@@ -20,8 +20,9 @@ Matches Apex ``fused_weight_gradient_mlp_cuda`` semantics used by Megatron
 
 Each update performs ``main_grad += grad_output.T @ input`` (after collapsing
 leading dimensions).  Half-precision activations with fp32 ``main_grad`` use
-FlagGems ``addmm`` fusion; fp32 activations delegate the fused GEMM to
-``torch.addmm`` (cuBLAS) because it must match Apex bit-for-bit in practice.
+FlagGems ``addmm_dtype_out`` (fused fp32 accum).  Same-dtype paths use
+``torch.addmm`` (cuBLAS) so layout can keep ``OP_T`` without materializing the
+transpose, matching Apex's ``cublasGemmEx`` shape.
 """
 
 import logging
@@ -31,7 +32,6 @@ import torch
 import flag_gems
 
 from .addmm import addmm_dtype_out
-from .mm import mm
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ def _validate_device(*tensors: torch.Tensor) -> None:
         )
 
 
-def _fused_addmm_fp32_accum(
+def _fused_addmm_cublas(
     main_grad: torch.Tensor,
     mat1: torch.Tensor,
     mat2: torch.Tensor,
@@ -76,6 +76,9 @@ def _fused_addmm_fp32_accum(
     Apex calls ``cublasGemmEx`` with ``CUBLAS_GEMM_DEFAULT_TENSOR_OP`` and does
     not force TF32 off.  Use PyTorch ``addmm`` with default backend settings so
     numerics track the Apex extension on the same device.
+
+    ``mat1`` may be a transpose view (``grad_output.t()``); cuBLAS can use
+    ``OP_T`` without materializing a contiguous copy.
     """
     torch.addmm(main_grad, mat1, mat2, beta=1, alpha=1, out=main_grad)
 
@@ -87,33 +90,25 @@ def _accum_wgrad(
     *,
     fp32_accum: bool,
 ) -> None:
-    grad_output_T = grad_output_2d.t().contiguous()
-    input_c = input_2d.contiguous()
+    # Transpose view only — avoid .contiguous() so cuBLAS can use OP_T.
+    grad_output_T = grad_output_2d.t()
 
-    if fp32_accum and input_c.dtype == torch.bfloat16:
-        # bf16 activations: fused fp32 accum via FlagGems addmm.
+    if fp32_accum and input_2d.dtype in (torch.float16, torch.bfloat16):
+        # Half activations + fp32 main_grad: fused Triton addmm (no full fp32 cast).
+        # addmm_out contiguifies mat1 internally when needed.
         addmm_dtype_out(
             main_grad,
             grad_output_T,
-            input_c,
+            input_2d,
             torch.float32,
             beta=1,
             alpha=1,
             out=main_grad,
         )
-    elif fp32_accum and input_c.dtype == torch.float16:
-        # fp16 activations: mm in fp32 then add (validated vs Apex).
-        wgrad = mm(
-            grad_output_T.to(torch.float32),
-            input_c.to(torch.float32),
-        )
-        main_grad.add_(wgrad)
-    elif fp32_accum:
-        # fp32 activations: fused cuBLAS accumulate (matches Apex kernel).
-        _fused_addmm_fp32_accum(main_grad, grad_output_T, input_c)
     else:
-        wgrad = mm(grad_output_T, input_c)
-        main_grad.add_(wgrad)
+        # Same-dtype (fp32 input or fp16/bf16 accum): cuBLAS fused addmm.
+        # Matches Apex kernel path; transpose view keeps OP_T without copy.
+        _fused_addmm_cublas(main_grad, grad_output_T, input_2d)
 
 
 def wgrad_gemm_accum_fp32(

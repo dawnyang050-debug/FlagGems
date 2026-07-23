@@ -29,10 +29,22 @@ except ImportError:
 # Table header defaults to "Torch Latency"; rename when baseline is Apex.
 _BASELINE_LABEL = "Apex" if HAS_APEX_WGRAD else "PyTorch ref"
 
+# (batch/K, in_features/N, out_features/M).
+# GEMM is main_grad[M,N] += grad_output.T[M,K] @ input[K,N], same M/N/K as mm.
+# Larger entries follow BlasBenchmark / mm in core_shapes.yaml:
+#   [B, M, N, K] -> here (K, N, M).
 WGRAD_GEMM_ACCUM_SHAPES = [
-    (64, 512),
-    (128, 1024),
-    (256, 2048),
+    # previous small shapes (kept for continuity; out was 2 * in)
+    (64, 512, 1024),
+    (128, 1024, 2048),
+    (256, 2048, 4096),
+    # from BlasBenchmark mm shapes
+    (384, 384, 384),
+    (1024, 1024, 1024),
+    (2048, 2048, 2048),
+    (4096, 4096, 4096),
+    # larger K (closer to token-batch × hidden)
+    (8192, 4096, 4096),
 ]
 
 
@@ -111,8 +123,7 @@ class WgradGemmAccumFp32Benchmark(base.Benchmark):
         self.shapes = WGRAD_GEMM_ACCUM_SHAPES
 
     def get_input_iter(self, cur_dtype):
-        for batch, in_features in self.shapes:
-            out_features = in_features * 2
+        for batch, in_features, out_features in self.shapes:
             input_tensor = torch.randn(
                 batch, in_features, dtype=cur_dtype, device=self.device
             )
@@ -130,8 +141,7 @@ class WgradGemmAccumFp16Benchmark(base.Benchmark):
         self.shapes = WGRAD_GEMM_ACCUM_SHAPES
 
     def get_input_iter(self, cur_dtype):
-        for batch, in_features in self.shapes:
-            out_features = in_features * 2
+        for batch, in_features, out_features in self.shapes:
             input_tensor = torch.randn(
                 batch, in_features, dtype=cur_dtype, device=self.device
             )
