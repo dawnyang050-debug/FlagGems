@@ -29,6 +29,18 @@ except ImportError:
 # Table header defaults to "Torch Latency"; rename when baseline is Apex.
 _BASELINE_LABEL = "Apex" if HAS_APEX_WGRAD else "PyTorch ref"
 
+_BF16_OK = flag_gems.runtime.device.support_bf16
+
+# fp32-accum API: half/bf16 activations into fp32 main_grad, plus fp32 activations.
+_FP32_ACCUM_BENCH_DTYPES = [torch.float16, torch.float32]
+if _BF16_OK:
+    _FP32_ACCUM_BENCH_DTYPES.insert(1, torch.bfloat16)
+
+# fp16-accum API: same-dtype half/bf16 main_grad.
+_FP16_ACCUM_BENCH_DTYPES = [torch.float16]
+if _BF16_OK:
+    _FP16_ACCUM_BENCH_DTYPES.append(torch.bfloat16)
+
 # (batch/K, in_features/N, out_features/M).
 # GEMM is main_grad[M,N] += grad_output.T[M,K] @ input[K,N], same M/N/K as mm.
 # Larger entries follow BlasBenchmark / mm in core_shapes.yaml:
@@ -164,7 +176,7 @@ def test_wgrad_gemm_accum_fp32():
     bench = WgradGemmAccumFp32Benchmark(
         op_name="wgrad_gemm_accum_fp32",
         torch_op=baseline,
-        dtypes=[torch.float16, torch.float32],
+        dtypes=_FP32_ACCUM_BENCH_DTYPES,
     )
     bench.set_gems(_gems_wgrad_gemm_accum_fp32)
     _run_with_baseline_header(bench)
@@ -180,7 +192,7 @@ def test_wgrad_gemm_accum_fp16():
     bench = WgradGemmAccumFp16Benchmark(
         op_name="wgrad_gemm_accum_fp16",
         torch_op=baseline,
-        dtypes=[torch.float16],
+        dtypes=_FP16_ACCUM_BENCH_DTYPES,
     )
     bench.set_gems(_gems_wgrad_gemm_accum_fp16)
     _run_with_baseline_header(bench)
