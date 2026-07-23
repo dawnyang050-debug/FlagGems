@@ -224,7 +224,13 @@ def _fused_addmm_cublas(
     mat2: torch.Tensor,
 ) -> None:
     """Same-dtype fused ``main_grad += mat1 @ mat2`` via PyTorch cuBLAS addmm."""
-    torch.addmm(main_grad, mat1, mat2, beta=1, alpha=1, out=main_grad)
+    if main_grad.is_contiguous():
+        torch.addmm(main_grad, mat1, mat2, beta=1, alpha=1, out=main_grad)
+        return
+    # Non-contiguous out: compute into a dense buffer then copy back.
+    weight = main_grad.contiguous()
+    torch.addmm(weight, mat1, mat2, beta=1, alpha=1, out=weight)
+    main_grad.copy_(weight)
 
 
 def _accum_wgrad(
@@ -234,6 +240,10 @@ def _accum_wgrad(
     *,
     fp32_accum: bool,
 ) -> None:
+    # K == 0: GEMM contributes zeros; leave main_grad unchanged (beta=1, empty product).
+    if input_2d.size(0) == 0:
+        return
+
     if fp32_accum:
         # Match Apex fused_weight_gradient path (half/bf16/fp32 -> fp32 C).
         _cublas_wgrad_gemm_accum_fp32(input_2d, grad_output_2d, main_grad)

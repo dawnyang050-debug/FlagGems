@@ -174,6 +174,11 @@ def _as_non_contiguous_2d(contiguous_2d: torch.Tensor) -> torch.Tensor:
     return nc
 
 
+def _as_non_contiguous_main_grad(contiguous_2d: torch.Tensor) -> torch.Tensor:
+    """Build a non-contiguous (out, in) main_grad with identical values."""
+    return _as_non_contiguous_2d(contiguous_2d)
+
+
 def _as_non_contiguous_3d(contiguous_3d: torch.Tensor) -> torch.Tensor:
     """Build a non-contiguous (D0, D1, F) view with identical values."""
     dim0, dim1, feat = contiguous_3d.shape
@@ -337,6 +342,113 @@ def test_wgrad_gemm_accum_fp32_invalid_main_grad_dtype():
 
     with pytest.raises(RuntimeError, match="main_grad must be float32"):
         wgrad_gemm_accum_fp32(input_tensor, grad_output, main_grad)
+
+
+@pytest.mark.wgrad_gemm_accum_fp32
+@pytest.mark.parametrize("dtype", FP32_ACCUM_CPU_REF_DTYPES)
+def test_wgrad_gemm_accum_fp32_empty_batch(dtype):
+    """K==0 must be a no-op: main_grad unchanged."""
+    _with_seed(20260739)
+    batch, in_features, out_features = 0, 16, 32
+    input_tensor = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad = torch.randn(
+        (out_features, in_features), dtype=torch.float32, device=flag_gems.device
+    )
+    seed = main_grad.clone()
+
+    wgrad_gemm_accum_fp32(input_tensor, grad_output, main_grad)
+    assert torch.equal(main_grad, seed)
+
+
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp16_empty_batch(dtype):
+    """K==0 must be a no-op on the fp16/bf16 accum path."""
+    _with_seed(20260740)
+    batch, in_features, out_features = 0, 16, 32
+    input_tensor = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad = torch.randn(
+        (out_features, in_features), dtype=dtype, device=flag_gems.device
+    )
+    seed = main_grad.clone()
+
+    wgrad_gemm_accum_fp16(input_tensor, grad_output, main_grad)
+    assert torch.equal(main_grad, seed)
+
+
+@pytest.mark.wgrad_gemm_accum_fp32
+@pytest.mark.parametrize("dtype", FP32_ACCUM_CPU_REF_DTYPES)
+def test_wgrad_gemm_accum_fp32_main_grad_non_contiguous(dtype):
+    """Non-contiguous main_grad must match contiguous accumulation."""
+    _with_seed(20260741)
+    batch, in_features, out_features = 8, 32, 64
+    input_tensor = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_c = torch.randn(
+        (out_features, in_features), dtype=torch.float32, device=flag_gems.device
+    )
+
+    ref_main = main_c.clone()
+    _ref_wgrad_gemm_accum_fp32_cpu(input_tensor, grad_output, ref_main)
+
+    res_contig = main_c.clone()
+    wgrad_gemm_accum_fp32(input_tensor, grad_output, res_contig)
+
+    # Rebuild non-contiguous storage; Tensor.clone() would densify and defeat the test.
+    res_nc = _as_non_contiguous_main_grad(main_c)
+    assert not res_nc.is_contiguous()
+    wgrad_gemm_accum_fp32(input_tensor, grad_output, res_nc)
+
+    _assert_vs_cpu_ref(res_nc, ref_main, torch.float32, reduce_dim=batch)
+    utils.gems_assert_close(
+        res_nc, res_contig, torch.float32, reduce_dim=batch, atol=DEFAULT_ATOL
+    )
+
+
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp16_main_grad_non_contiguous(dtype):
+    """Non-contiguous main_grad on fp16/bf16 accum path."""
+    _with_seed(20260742)
+    batch, in_features, out_features = 8, 32, 64
+    input_tensor = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_c = torch.randn(
+        (out_features, in_features), dtype=dtype, device=flag_gems.device
+    )
+
+    ref_main = main_c.clone()
+    _ref_wgrad_gemm_accum_fp16_cpu(input_tensor, grad_output, ref_main, dtype)
+
+    res_contig = main_c.clone()
+    wgrad_gemm_accum_fp16(input_tensor, grad_output, res_contig)
+
+    res_nc = _as_non_contiguous_main_grad(main_c)
+    assert not res_nc.is_contiguous()
+    wgrad_gemm_accum_fp16(input_tensor, grad_output, res_nc)
+
+    _assert_vs_cpu_ref(res_nc, ref_main, dtype, reduce_dim=batch)
+    utils.gems_assert_close(
+        res_nc, res_contig, dtype, reduce_dim=batch, atol=DEFAULT_ATOL
+    )
 
 
 @pytest.mark.wgrad_gemm_accum_fp32

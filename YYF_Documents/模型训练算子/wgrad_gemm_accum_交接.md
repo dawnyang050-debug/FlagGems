@@ -106,8 +106,8 @@ Megatron LinearWithGradAccumulationAndAsyncCommunication.backward
 | 项 | 优先级 | 说明 |
 |----|--------|------|
 | 请示老师是否收口 / 接 Megatron | P0 | 球在老师 |
-| 统一 `test_wgrad_gemm_accum_fp16_2d` 的 `to_reference(..., True)` | P1 | 测试口径干净 |
-| 空 batch、`main_grad` 非连续、NaN/Inf | P1 | 生产边界 |
+| ~~统一 `to_reference(..., True)`~~ | ~~P1~~ | **已改** `main_grad.clone()` |
+| ~~空 batch / `main_grad` 非连续~~ | ~~P1~~ | **已补**（见 6.3）；仍缺 NaN/Inf |
 | ctypes GemmEx → 正式 CUDA 扩展 | P0 工程化 | 能跑且约 1×，但找 `.so`+魔数不够「产品级」 |
 | 个人交接以外的正式 PR 节奏 | 听老师 | 话术里不提前说 push/PR |
 
@@ -231,8 +231,9 @@ non-contiguous 坑：不能对连续走 `OP_T` view、对非连续走 `t().conti
 
 ### 6.3 已知小瑕疵（P1）
 
-- ~~`test_wgrad_gemm_accum_fp16_2d` 的 `to_reference(..., True)`~~：**已改为 `main_grad.clone()`**（2026-07-23），与其它用例一致  
-- 仍缺：空 batch、`main_grad` 非连续、NaN/Inf 策略  
+- ~~`test_wgrad_gemm_accum_fp16_2d` 的 `to_reference(..., True)`~~：**已改为 `main_grad.clone()`**（2026-07-23）  
+- ~~空 batch / `main_grad` 非连续~~：**已补**（实现：`K==0` early return；fp16 accum 对非连续 `main_grad` densify 再 `copy_`；测试：`empty_batch` / `main_grad_non_contiguous`）  
+- 仍缺：NaN/Inf 策略  
 
 ### 6.4 跑正确性
 
@@ -322,7 +323,7 @@ pytest benchmark/test_wgrad_gemm_accum.py -v -s --tb=short 2>&1 | tee wgrad_benc
 
 **当前适合的请示**：
 
-> 正确性全过；性能（含 bf16）相对 Apex 大约 1×。请问这块先收，还是接训练路径 / 再补空 batch 等边界？
+> 正确性全过；性能（含 bf16）相对 Apex 大约 1×；空 batch / main_grad 非连续也已补。请问这块先收，还是接训练路径 / 再补 NaN？
 
 ---
 
@@ -354,11 +355,9 @@ pytest benchmark/test_wgrad_gemm_accum.py -v -s --tb=short 2>&1 | tee wgrad_benc
 
 1. 读本文件第 3、5、8 节确认状态  
 2. 容器 `git status` / `git log -1` 确认与本机分支一致  
-3. **等老师回「收 / 接训练 / 补测」**；未回前可做：  
-   - 统一 `to_reference`  
-   - 空 batch / main_grad 非连续用例  
-   - 更新本交接若有新数字  
-4. 若老师要求接 Megatron：先确认允许，再改调用点，**仍 GPU4 only**  
+3. **本机改动 sync 到容器后**，先跑空 batch / nc main_grad 新测，再全量正确性  
+4. **等老师回「收 / 接训练 / 再补 NaN」**；未回前可选：NaN/Inf 策略、GemmEx 工程化  
+5. 若老师要求接 Megatron：先确认允许，再改调用点，**仍 GPU4 only**  
 
 ---
 
@@ -367,9 +366,9 @@ pytest benchmark/test_wgrad_gemm_accum.py -v -s --tb=short 2>&1 | tee wgrad_benc
 文件：`src/flag_gems/ops/wgrad_gemm_accum.py`
 
 - `_collapse_to_2d`：reshape  
-- `_load_cublas` / `_cublas_wgrad_gemm_accum_fp32`：GemmEx  
-- `_matmul_operands` + `_fused_addmm_cublas`：同 dtype addmm  
-- `_accum_wgrad`：`fp32_accum` 分流  
+- `_load_cublas` / `_cublas_wgrad_gemm_accum_fp32`：GemmEx（非连续 `main_grad` densify + `copy_`）  
+- `_matmul_operands` + `_fused_addmm_cublas`：同 dtype addmm（同上 nc 处理）  
+- `_accum_wgrad`：`K==0` early return；`fp32_accum` 分流  
 
 文件：`benchmark/test_wgrad_gemm_accum.py`
 
