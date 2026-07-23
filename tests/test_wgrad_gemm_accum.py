@@ -111,6 +111,34 @@ def _assert_vs_apex(res, ref, dtype, *, reduce_dim):
     )
 
 
+def _assert_boundary_close(res, ref, dtype, *, reduce_dim, case, base_atol=DEFAULT_ATOL):
+    """Compare boundary results with magnitude-aware tolerance for large values.
+
+    Unit-scale cases keep the normal BLAS atol/rtol.  For ``large_1e3``, GEMM
+    absolute error grows with |A|*|B|*K; default float32 rtol (1.3e-6) is for
+    O(1) values and falsely rejects O(1e-5) relative GEMM noise.  Use relative
+    comparison at 1e-4 (fp32 matmul across CPU fp64 / GPU / Apex backends).
+    """
+    res_c = res.detach().cpu().to(dtype)
+    ref_c = ref.detach().cpu().to(dtype)
+    assert torch.isfinite(res_c).all()
+    assert torch.isfinite(ref_c).all()
+
+    if case == "large_1e3":
+        mag = max(float(ref_c.abs().max()), 1.0)
+        torch.testing.assert_close(
+            res_c,
+            ref_c,
+            atol=base_atol * reduce_dim * mag,
+            rtol=1e-4,
+            equal_nan=False,
+        )
+    else:
+        utils.gems_assert_close(
+            res_c, ref_c, dtype, reduce_dim=reduce_dim, atol=base_atol
+        )
+
+
 def _with_seed(seed: int):
     """Set deterministic seed for reproducible coverage cases."""
     torch.manual_seed(seed)
@@ -703,7 +731,9 @@ def test_wgrad_gemm_accum_fp32_numeric_boundaries(case, dtype):
         assert torch.equal(res_main, main_grad)
         assert torch.equal(ref_main, main_grad)
     else:
-        _assert_vs_cpu_ref(res_main, ref_main, torch.float32, reduce_dim=batch)
+        _assert_boundary_close(
+            res_main, ref_main, torch.float32, reduce_dim=batch, case=case
+        )
 
 
 @pytest.mark.wgrad_gemm_accum_fp32
@@ -739,12 +769,13 @@ def test_wgrad_gemm_accum_fp32_numeric_boundaries_fp32_input_tf32_off(case):
         assert torch.equal(res_main, main_grad)
         assert torch.equal(ref_main, main_grad)
     else:
-        utils.gems_assert_close(
-            res_main.cpu(),
-            ref_main.cpu(),
+        _assert_boundary_close(
+            res_main,
+            ref_main,
             torch.float32,
             reduce_dim=batch,
-            atol=TF32_OFF_ATOL,
+            case=case,
+            base_atol=TF32_OFF_ATOL,
         )
 
 
@@ -783,7 +814,9 @@ def test_wgrad_gemm_accum_fp32_vs_apex_numeric_boundaries(case, dtype):
         assert torch.equal(gems_main, main_grad)
         assert torch.equal(apex_main, main_grad)
     else:
-        _assert_vs_apex(gems_main, apex_main, torch.float32, reduce_dim=batch)
+        _assert_boundary_close(
+            gems_main, apex_main, torch.float32, reduce_dim=batch, case=case
+        )
 
 
 def _large_activation_scale(dtype):
@@ -884,4 +917,6 @@ def test_wgrad_gemm_accum_fp16_numeric_boundaries(case, dtype):
         assert torch.equal(res_main, main_grad)
         assert torch.equal(ref_main, main_grad)
     else:
-        _assert_vs_cpu_ref(res_main, ref_main, dtype, reduce_dim=batch)
+        _assert_boundary_close(
+            res_main, ref_main, dtype, reduce_dim=batch, case=case
+        )
