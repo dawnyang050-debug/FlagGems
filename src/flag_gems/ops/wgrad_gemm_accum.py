@@ -19,21 +19,40 @@ Matches Apex ``fused_weight_gradient_mlp_cuda`` semantics used by Megatron
 ``gradient_accumulation_fusion`` is enabled.
 
 Each update performs ``main_grad += grad_output.T @ input`` (after collapsing
-leading dimensions).  Half-precision activations with fp32 ``main_grad`` use
-FlagGems ``addmm_dtype_out`` (fused fp32 accum).  Same-dtype paths use
-``torch.addmm`` (cuBLAS) so layout can keep ``OP_T`` without materializing the
-transpose, matching Apex's ``cublasGemmEx`` shape.
+leading dimensions).
+
+``wgrad_gemm_accum_fp32`` (including half/bf16 activations into fp32
+``main_grad``) calls ``cublasGemmEx`` with the same layout / dtype / algo as
+Apex.  ``wgrad_gemm_accum_fp16`` uses ``torch.addmm`` (cuBLAS) for same-dtype
+accumulation.
 """
 
+from __future__ import annotations
+
+import ctypes
+import glob
 import logging
+import os
+from functools import lru_cache
 
 import torch
 
 import flag_gems
 
-from .addmm import addmm_dtype_out
-
 logger = logging.getLogger(__name__)
+
+# cublasOperation_t
+_CUBLAS_OP_N = 0
+_CUBLAS_OP_T = 1
+
+# cudaDataType (library_types.h)
+_CUDA_R_32F = 0
+_CUDA_R_16F = 2
+_CUDA_R_16BF = 14
+
+# cublasGemmAlgo_t — same as Apex CUBLAS_GEMM_DEFAULT_TENSOR_OP
+_CUBLAS_GEMM_DEFAULT_TENSOR_OP = 99
+_CUBLAS_STATUS_SUCCESS = 0
 
 
 def _collapse_to_2d(input: torch.Tensor, grad_output: torch.Tensor):
@@ -66,38 +85,146 @@ def _validate_device(*tensors: torch.Tensor) -> None:
         )
 
 
-def _fused_addmm_cublas(
+@lru_cache(None)
+def _load_cublas() -> ctypes.CDLL:
+    """Load libcublas from Torch / NVIDIA wheel paths, then system names."""
+    candidates: list[str] = []
+    torch_dir = os.path.dirname(torch.__file__)
+    candidates.extend(glob.glob(os.path.join(torch_dir, "lib", "libcublas.so*")))
+    candidates.extend(
+        glob.glob(os.path.join(torch_dir, "lib", "**", "libcublas.so*"), recursive=True)
+    )
+    try:
+        import nvidia.cublas.lib as cublas_pkg  # type: ignore
+
+        pkg_dir = os.path.dirname(cublas_pkg.__file__)
+        candidates.extend(glob.glob(os.path.join(pkg_dir, "libcublas.so*")))
+    except Exception:
+        pass
+    candidates.extend(["libcublas.so.12", "libcublas.so.11", "libcublas.so"])
+
+    seen: set[str] = set()
+    for path in candidates:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        try:
+            return ctypes.CDLL(path)
+        except OSError:
+            continue
+    raise RuntimeError(
+        "Unable to load libcublas; required for wgrad_gemm_accum_fp32 GemmEx path"
+    )
+
+
+def _blas_handle() -> int:
+    if hasattr(torch.cuda, "current_blas_handle"):
+        return int(torch.cuda.current_blas_handle())
+    return int(torch._C._cuda_getCurrentBlasHandle())
+
+
+def _cuda_dtype(tensor: torch.Tensor) -> int:
+    if tensor.dtype == torch.float16:
+        return _CUDA_R_16F
+    if tensor.dtype == torch.bfloat16:
+        return _CUDA_R_16BF
+    if tensor.dtype == torch.float32:
+        return _CUDA_R_32F
+    raise RuntimeError(f"Unsupported dtype for cublasGemmEx wgrad: {tensor.dtype}")
+
+
+def _cublas_wgrad_gemm_accum_fp32(
+    input_2d: torch.Tensor,
+    grad_output_2d: torch.Tensor,
     main_grad: torch.Tensor,
-    mat1: torch.Tensor,
-    mat2: torch.Tensor,
 ) -> None:
-    """Fused ``main_grad += mat1 @ mat2`` via cuBLAS (Apex-aligned).
+    """Apex ``wgrad_gemm_accum_fp32_cuda`` layout via ``cublasGemmEx``.
 
-    Apex calls ``cublasGemmEx`` with ``CUBLAS_GEMM_DEFAULT_TENSOR_OP`` and does
-    not force TF32 off.  Use PyTorch ``addmm`` with default backend settings so
-    numerics track the Apex extension on the same device.
-
-    ``mat1`` may be a transpose view (``grad_output.t()``); cuBLAS can use
-    ``OP_T`` without materializing a contiguous copy.
+    Computes ``main_grad += grad_output.T @ input`` without materializing the
+    transpose: ``OP_N(input)`` x ``OP_T(grad_output)`` into fp32 ``main_grad``.
     """
-    torch.addmm(main_grad, mat1, mat2, beta=1, alpha=1, out=main_grad)
+    if main_grad.dtype != torch.float32:
+        raise RuntimeError("main_grad must be float32 for GemmEx fp32-accum path")
+    if input_2d.dtype != grad_output_2d.dtype:
+        raise RuntimeError(
+            "input and grad_output dtype must match, "
+            f"got {input_2d.dtype} vs {grad_output_2d.dtype}"
+        )
+
+    input_2d = input_2d.contiguous()
+    grad_output_2d = grad_output_2d.contiguous()
+    weight_is_main = main_grad.is_contiguous()
+    weight = main_grad if weight_is_main else main_grad.contiguous()
+
+    hidden_dim = int(input_2d.size(0))
+    in_dim = int(input_2d.size(1))
+    out_dim = int(grad_output_2d.size(1))
+    if int(grad_output_2d.size(0)) != hidden_dim:
+        raise RuntimeError("input/grad_output row mismatch after collapse")
+    if tuple(weight.shape) != (out_dim, in_dim):
+        raise RuntimeError(
+            f"main_grad shape mismatch: expected ({out_dim}, {in_dim}), "
+            f"got {tuple(weight.shape)}"
+        )
+
+    lib = _load_cublas()
+    gemm_ex = lib.cublasGemmEx
+    gemm_ex.restype = ctypes.c_int
+
+    alpha = ctypes.c_float(1.0)
+    beta = ctypes.c_float(1.0)
+    a_type = _cuda_dtype(input_2d)
+
+    status = gemm_ex(
+        ctypes.c_void_p(_blas_handle()),
+        ctypes.c_int(_CUBLAS_OP_N),
+        ctypes.c_int(_CUBLAS_OP_T),
+        ctypes.c_int(in_dim),
+        ctypes.c_int(out_dim),
+        ctypes.c_int(hidden_dim),
+        ctypes.byref(alpha),
+        ctypes.c_void_p(input_2d.data_ptr()),
+        ctypes.c_int(a_type),
+        ctypes.c_int(in_dim),
+        ctypes.c_void_p(grad_output_2d.data_ptr()),
+        ctypes.c_int(a_type),
+        ctypes.c_int(out_dim),
+        ctypes.byref(beta),
+        ctypes.c_void_p(weight.data_ptr()),
+        ctypes.c_int(_CUDA_R_32F),
+        ctypes.c_int(in_dim),
+        ctypes.c_int(_CUDA_R_32F),
+        ctypes.c_int(_CUBLAS_GEMM_DEFAULT_TENSOR_OP),
+    )
+    if status != _CUBLAS_STATUS_SUCCESS:
+        raise RuntimeError(f"cublasGemmEx failed with status {status}")
+
+    if not weight_is_main:
+        main_grad.copy_(weight)
 
 
 def _matmul_operands(
     grad_output_2d: torch.Tensor, input_2d: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return ``(grad_output.T, input)`` for GEMM.
+    """Return ``(grad_output.T, input)`` for same-dtype ``torch.addmm``.
 
-    Always densify first, then take a transpose *view*.  That way contiguous and
-    non-contiguous callers share one cuBLAS ``OP_T`` path (bit-identical), instead
-    of mixing ``OP_T`` with a materialized ``t().contiguous()`` which diverges in
-    fp16/bf16.
+    Densify first, then take a transpose view so contiguous / non-contiguous
+    callers share one cuBLAS ``OP_T`` path.
     """
     if not grad_output_2d.is_contiguous():
         grad_output_2d = grad_output_2d.contiguous()
     if not input_2d.is_contiguous():
         input_2d = input_2d.contiguous()
     return grad_output_2d.t(), input_2d
+
+
+def _fused_addmm_cublas(
+    main_grad: torch.Tensor,
+    mat1: torch.Tensor,
+    mat2: torch.Tensor,
+) -> None:
+    """Same-dtype fused ``main_grad += mat1 @ mat2`` via PyTorch cuBLAS addmm."""
+    torch.addmm(main_grad, mat1, mat2, beta=1, alpha=1, out=main_grad)
 
 
 def _accum_wgrad(
@@ -107,22 +234,13 @@ def _accum_wgrad(
     *,
     fp32_accum: bool,
 ) -> None:
-    grad_output_T, input_c = _matmul_operands(grad_output_2d, input_2d)
+    if fp32_accum:
+        # Match Apex fused_weight_gradient path (half/bf16/fp32 -> fp32 C).
+        _cublas_wgrad_gemm_accum_fp32(input_2d, grad_output_2d, main_grad)
+        return
 
-    if fp32_accum and input_c.dtype in (torch.float16, torch.bfloat16):
-        # Half activations + fp32 main_grad: fused Triton addmm (no full fp32 cast).
-        addmm_dtype_out(
-            main_grad,
-            grad_output_T,
-            input_c,
-            torch.float32,
-            beta=1,
-            alpha=1,
-            out=main_grad,
-        )
-    else:
-        # Same-dtype (fp32 input or fp16/bf16 accum): cuBLAS fused addmm.
-        _fused_addmm_cublas(main_grad, grad_output_T, input_c)
+    grad_output_T, input_c = _matmul_operands(grad_output_2d, input_2d)
+    _fused_addmm_cublas(main_grad, grad_output_T, input_c)
 
 
 def wgrad_gemm_accum_fp32(
