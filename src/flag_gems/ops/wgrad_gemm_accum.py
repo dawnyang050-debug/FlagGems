@@ -83,6 +83,21 @@ def _fused_addmm_cublas(
     torch.addmm(main_grad, mat1, mat2, beta=1, alpha=1, out=main_grad)
 
 
+def _matmul_operands(
+    grad_output_2d: torch.Tensor, input_2d: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return ``(grad_output.T, input)`` for GEMM.
+
+    Contiguous inputs keep a transpose view so cuBLAS can use ``OP_T`` without
+    materializing a copy.  Non-contiguous layouts are made dense first so
+    results match the contiguous path (Apex stub also effectively requires
+    well-defined row-major storage after collapse).
+    """
+    if grad_output_2d.is_contiguous() and input_2d.is_contiguous():
+        return grad_output_2d.t(), input_2d
+    return grad_output_2d.t().contiguous(), input_2d.contiguous()
+
+
 def _accum_wgrad(
     grad_output_2d: torch.Tensor,
     input_2d: torch.Tensor,
@@ -90,16 +105,14 @@ def _accum_wgrad(
     *,
     fp32_accum: bool,
 ) -> None:
-    # Transpose view only — avoid .contiguous() so cuBLAS can use OP_T.
-    grad_output_T = grad_output_2d.t()
+    grad_output_T, input_c = _matmul_operands(grad_output_2d, input_2d)
 
-    if fp32_accum and input_2d.dtype in (torch.float16, torch.bfloat16):
+    if fp32_accum and input_c.dtype in (torch.float16, torch.bfloat16):
         # Half activations + fp32 main_grad: fused Triton addmm (no full fp32 cast).
-        # addmm_out contiguifies mat1 internally when needed.
         addmm_dtype_out(
             main_grad,
             grad_output_T,
-            input_2d,
+            input_c,
             torch.float32,
             beta=1,
             alpha=1,
@@ -107,8 +120,7 @@ def _accum_wgrad(
         )
     else:
         # Same-dtype (fp32 input or fp16/bf16 accum): cuBLAS fused addmm.
-        # Matches Apex kernel path; transpose view keeps OP_T without copy.
-        _fused_addmm_cublas(main_grad, grad_output_T, input_2d)
+        _fused_addmm_cublas(main_grad, grad_output_T, input_c)
 
 
 def wgrad_gemm_accum_fp32(
