@@ -289,8 +289,6 @@ def test_wgrad_gemm_accum_fp16_2d(batch, in_features, out_features, dtype):
     _assert_vs_cpu_ref(res_main_grad, ref_main_grad, dtype, reduce_dim=batch)
 
 
-<<<<<<< Updated upstream
-=======
 @pytest.mark.wgrad_gemm_accum_fp16
 @pytest.mark.parametrize("dim0, dim1, in_features, out_features", WGRAD_SHAPES_3D)
 @pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
@@ -318,7 +316,6 @@ def test_wgrad_gemm_accum_fp16_3d(dim0, dim1, in_features, out_features, dtype):
     )
 
 
->>>>>>> Stashed changes
 @pytest.mark.wgrad_gemm_accum_fp32
 def test_wgrad_gemm_accum_fp32_accumulates_twice():
     """Verify += semantics across two micro-batch calls, not overwrite."""
@@ -681,8 +678,6 @@ def test_wgrad_gemm_accum_fp32_vs_apex_large_shape_3d(
     )
 
 
-<<<<<<< Updated upstream
-=======
 @pytest.mark.wgrad_gemm_accum_fp16
 @pytest.mark.skipif(
     not HAS_APEX_WGRAD,
@@ -751,7 +746,6 @@ def test_wgrad_gemm_accum_fp16_vs_apex_large_shape_3d(
     )
 
 
->>>>>>> Stashed changes
 # Repeat-call stability: catch intermittent handle / workspace pollution.
 REPEAT_ITERS_FRESH = 200
 REPEAT_ITERS_ACCUM = 200
@@ -1109,8 +1103,6 @@ def test_wgrad_gemm_accum_fp16_2d_non_contiguous(
     )
 
 
-<<<<<<< Updated upstream
-=======
 @pytest.mark.wgrad_gemm_accum_fp16
 @pytest.mark.parametrize("dim0, dim1, in_features, out_features", WGRAD_SHAPES_3D)
 @pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
@@ -1281,7 +1273,6 @@ def test_wgrad_gemm_accum_fp16_vs_apex_multi_non_contiguous(dtype):
     _assert_vs_apex(gems_main, apex_main, dtype, reduce_dim=batch)
 
 
->>>>>>> Stashed changes
 def _make_numeric_boundary_tensors(
     case, *, batch, in_features, out_features, dtype, device, seed
 ):
