@@ -651,6 +651,154 @@ def test_wgrad_gemm_accum_fp32_vs_apex_large_shape_3d(
     )
 
 
+# Repeat-call stability: catch intermittent handle / workspace pollution.
+REPEAT_ITERS_FRESH = 200
+REPEAT_ITERS_ACCUM = 200
+REPEAT_ITERS_STRESS = 1000
+
+
+@pytest.mark.wgrad_gemm_accum_fp32
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+@pytest.mark.parametrize("dtype", FP32_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp32_vs_apex_repeat_fresh(dtype):
+    """Same inputs, many single-shot calls; each must still match Apex."""
+    _with_seed(20260748)
+    batch, in_features, out_features = 8, 32, 64
+    input_tensor = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad_seed = torch.randn(
+        (out_features, in_features), dtype=torch.float32, device=flag_gems.device
+    )
+
+    for _ in range(REPEAT_ITERS_FRESH):
+        apex_main = main_grad_seed.clone()
+        gems_main = main_grad_seed.clone()
+        apex_wgrad.wgrad_gemm_accum_fp32(input_tensor, grad_output, apex_main)
+        wgrad_gemm_accum_fp32(input_tensor, grad_output, gems_main)
+        _assert_vs_apex(gems_main, apex_main, torch.float32, reduce_dim=batch)
+
+
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+@pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp16_vs_apex_repeat_fresh(dtype):
+    """Same inputs, many single-shot calls on fp16/bf16 accum path."""
+    _with_seed(20260749)
+    batch, in_features, out_features = 8, 32, 64
+    input_tensor = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad_seed = torch.randn(
+        (out_features, in_features), dtype=dtype, device=flag_gems.device
+    )
+
+    for _ in range(REPEAT_ITERS_FRESH):
+        apex_main = main_grad_seed.clone()
+        gems_main = main_grad_seed.clone()
+        apex_wgrad.wgrad_gemm_accum_fp16(input_tensor, grad_output, apex_main)
+        wgrad_gemm_accum_fp16(input_tensor, grad_output, gems_main)
+        _assert_vs_apex(gems_main, apex_main, dtype, reduce_dim=batch)
+
+
+@pytest.mark.wgrad_gemm_accum_fp32
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+@pytest.mark.parametrize("dtype", FP32_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp32_vs_apex_repeat_accum(dtype):
+    """Accumulate repeatedly into the same main_grad; final must match Apex."""
+    _with_seed(20260750)
+    batch, in_features, out_features = 8, 32, 64
+    input_tensor = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad_seed = torch.randn(
+        (out_features, in_features), dtype=torch.float32, device=flag_gems.device
+    )
+
+    apex_main = main_grad_seed.clone()
+    gems_main = main_grad_seed.clone()
+    for _ in range(REPEAT_ITERS_ACCUM):
+        apex_wgrad.wgrad_gemm_accum_fp32(input_tensor, grad_output, apex_main)
+        wgrad_gemm_accum_fp32(input_tensor, grad_output, gems_main)
+
+    _assert_vs_apex(gems_main, apex_main, torch.float32, reduce_dim=batch)
+
+
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+@pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp16_vs_apex_repeat_accum(dtype):
+    """Accumulate repeatedly on fp16/bf16 path; final must match Apex."""
+    _with_seed(20260751)
+    batch, in_features, out_features = 8, 32, 64
+    input_tensor = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad_seed = torch.randn(
+        (out_features, in_features), dtype=dtype, device=flag_gems.device
+    )
+
+    apex_main = main_grad_seed.clone()
+    gems_main = main_grad_seed.clone()
+    for _ in range(REPEAT_ITERS_ACCUM):
+        apex_wgrad.wgrad_gemm_accum_fp16(input_tensor, grad_output, apex_main)
+        wgrad_gemm_accum_fp16(input_tensor, grad_output, gems_main)
+
+    _assert_vs_apex(gems_main, apex_main, dtype, reduce_dim=batch)
+
+
+@pytest.mark.wgrad_gemm_accum_fp32
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+def test_wgrad_gemm_accum_fp32_vs_apex_repeat_stress():
+    """1000 single-shot calls on the common fp16→fp32 training path."""
+    _with_seed(20260752)
+    batch, in_features, out_features = 8, 32, 64
+    dtype = torch.float16
+    input_tensor = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad_seed = torch.randn(
+        (out_features, in_features), dtype=torch.float32, device=flag_gems.device
+    )
+
+    for _ in range(REPEAT_ITERS_STRESS):
+        apex_main = main_grad_seed.clone()
+        gems_main = main_grad_seed.clone()
+        apex_wgrad.wgrad_gemm_accum_fp32(input_tensor, grad_output, apex_main)
+        wgrad_gemm_accum_fp32(input_tensor, grad_output, gems_main)
+        _assert_vs_apex(gems_main, apex_main, torch.float32, reduce_dim=batch)
+
+
 @pytest.mark.wgrad_gemm_accum_fp32
 @pytest.mark.parametrize(
     "batch, in_features, out_features",

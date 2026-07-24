@@ -110,6 +110,7 @@ Megatron LinearWithGradAccumulationAndAsyncCommunication.backward
 | ~~空 batch / `main_grad` 非连续~~ | ~~P1~~ | **已补**（见 6.3） |
 | ~~NaN/Inf 传播 vs Apex~~ | ~~P1~~ | **已补**；实现无改，测试对齐 Apex |
 | ~~大 shape correctness + vs Apex~~ | ~~P1~~ | **已补** `WGRAD_SHAPES_LARGE_*`（含 K=8192） |
+| ~~重复调用稳定性~~ | ~~P1~~ | **已补** fresh 200 / accum 200 / stress 1000 |
 | ctypes GemmEx → 正式 CUDA 扩展 | P0 工程化 | 能跑且约 1×，但找 `.so`+魔数不够「产品级」 |
 | 个人交接以外的正式 PR 节奏 | 听老师 | 话术里不提前说 push/PR |
 
@@ -236,7 +237,8 @@ non-contiguous 坑：不能对连续走 `OP_T` view、对非连续走 `t().conti
 - ~~`test_wgrad_gemm_accum_fp16_2d` 的 `to_reference(..., True)`~~：**已改为 `main_grad.clone()`**（2026-07-23）  
 - ~~空 batch / `main_grad` 非连续~~：**已补**（实现：`K==0` early return；fp16 accum 对非连续 `main_grad` densify 再 `copy_`；测试：`empty_batch` / `main_grad_non_contiguous`）  
 - ~~NaN/Inf 传播~~：**已补 vs Apex 并容器验证**（`*_vs_apex_nan_inf`，35 passed；口径与 Apex/cuBLAS GEMM 一致传播）  
-- ~~大 shape / 长序列 correctness~~：**已补** `*_vs_apex_large_shape`（对齐 bench：含 `(8192,4096,4096)` 与 3D collapse）
+- ~~大 shape / 长序列 correctness~~：**已补并容器验证** `*_vs_apex_large_shape`（28 passed；含 `(8192,4096,4096)` 与 3D collapse）  
+- ~~重复调用稳定性~~：**已补** `*_repeat_fresh`（200）/ `*_repeat_accum`（200）/ `*_repeat_stress`（1000，fp16→fp32）
 
 ### 6.4 跑正确性
 
@@ -358,8 +360,8 @@ pytest benchmark/test_wgrad_gemm_accum.py -v -s --tb=short 2>&1 | tee wgrad_benc
 
 1. 读本文件第 3、5、8 节确认状态  
 2. 容器 `git status` / `git log -1` 确认与本机分支一致  
-3. **本机改动 sync 到容器后**，先跑 `-k large_shape`，再全量正确性  
-4. **等老师回「收 / 接训练」**；未回前可选：重复调用稳定性、GemmEx 工程化  
+3. **本机改动 sync 到容器后**，先跑 `-k repeat`，再全量正确性  
+4. **等老师回「收 / 接训练」**；未回前可选：GemmEx 工程化  
 5. 若老师要求接 Megatron：先确认允许，再改调用点，**仍 GPU4 only**  
 
 ---
