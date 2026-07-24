@@ -289,6 +289,36 @@ def test_wgrad_gemm_accum_fp16_2d(batch, in_features, out_features, dtype):
     _assert_vs_cpu_ref(res_main_grad, ref_main_grad, dtype, reduce_dim=batch)
 
 
+<<<<<<< Updated upstream
+=======
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.parametrize("dim0, dim1, in_features, out_features", WGRAD_SHAPES_3D)
+@pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp16_3d(dim0, dim1, in_features, out_features, dtype):
+    """fp16/bf16 accum with 3D collapse vs independent CPU fp64 ref."""
+    _with_seed(20260753)
+    input_tensor = torch.randn(
+        (dim0, dim1, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (dim0, dim1, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad = torch.randn(
+        (out_features, in_features), dtype=dtype, device=flag_gems.device
+    )
+
+    ref_main_grad = main_grad.clone()
+    res_main_grad = main_grad.clone()
+
+    _ref_wgrad_gemm_accum_fp16_cpu(input_tensor, grad_output, ref_main_grad, dtype)
+    wgrad_gemm_accum_fp16(input_tensor, grad_output, res_main_grad)
+
+    _assert_vs_cpu_ref(
+        res_main_grad, ref_main_grad, dtype, reduce_dim=dim0 * dim1
+    )
+
+
+>>>>>>> Stashed changes
 @pytest.mark.wgrad_gemm_accum_fp32
 def test_wgrad_gemm_accum_fp32_accumulates_twice():
     """Verify += semantics across two micro-batch calls, not overwrite."""
@@ -651,6 +681,77 @@ def test_wgrad_gemm_accum_fp32_vs_apex_large_shape_3d(
     )
 
 
+<<<<<<< Updated upstream
+=======
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+@pytest.mark.parametrize("dim0, dim1, in_features, out_features", WGRAD_SHAPES_3D)
+@pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp16_vs_apex_3d(
+    dim0, dim1, in_features, out_features, dtype
+):
+    """fp16/bf16 accum 3D collapse must match Apex."""
+    _with_seed(20260754)
+    input_tensor = torch.randn(
+        (dim0, dim1, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (dim0, dim1, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad_seed = torch.randn(
+        (out_features, in_features), dtype=dtype, device=flag_gems.device
+    )
+
+    apex_main_grad = main_grad_seed.clone()
+    gems_main_grad = main_grad_seed.clone()
+
+    apex_wgrad.wgrad_gemm_accum_fp16(input_tensor, grad_output, apex_main_grad)
+    wgrad_gemm_accum_fp16(input_tensor, grad_output, gems_main_grad)
+
+    _assert_vs_apex(
+        gems_main_grad, apex_main_grad, dtype, reduce_dim=dim0 * dim1
+    )
+
+
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+@pytest.mark.parametrize(
+    "dim0, dim1, in_features, out_features", WGRAD_SHAPES_LARGE_3D
+)
+@pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp16_vs_apex_large_shape_3d(
+    dim0, dim1, in_features, out_features, dtype
+):
+    """Large 3D long-seq collapse on fp16/bf16 accum vs Apex."""
+    _with_seed(20260755)
+    input_tensor = torch.randn(
+        (dim0, dim1, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (dim0, dim1, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad_seed = torch.randn(
+        (out_features, in_features), dtype=dtype, device=flag_gems.device
+    )
+
+    apex_main_grad = main_grad_seed.clone()
+    gems_main_grad = main_grad_seed.clone()
+
+    apex_wgrad.wgrad_gemm_accum_fp16(input_tensor, grad_output, apex_main_grad)
+    wgrad_gemm_accum_fp16(input_tensor, grad_output, gems_main_grad)
+
+    _assert_vs_apex(
+        gems_main_grad, apex_main_grad, dtype, reduce_dim=dim0 * dim1
+    )
+
+
+>>>>>>> Stashed changes
 # Repeat-call stability: catch intermittent handle / workspace pollution.
 REPEAT_ITERS_FRESH = 200
 REPEAT_ITERS_ACCUM = 200
@@ -1008,6 +1109,179 @@ def test_wgrad_gemm_accum_fp16_2d_non_contiguous(
     )
 
 
+<<<<<<< Updated upstream
+=======
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.parametrize("dim0, dim1, in_features, out_features", WGRAD_SHAPES_3D)
+@pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp16_3d_non_contiguous(
+    dim0, dim1, in_features, out_features, dtype
+):
+    """fp16/bf16 accum: non-contiguous 3D inputs match contiguous and CPU ref."""
+    _with_seed(20260756)
+    input_c = torch.randn(
+        (dim0, dim1, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output_c = torch.randn(
+        (dim0, dim1, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad_seed = torch.randn(
+        (out_features, in_features), dtype=dtype, device=flag_gems.device
+    )
+
+    input_tensor = _as_non_contiguous_3d(input_c)
+    grad_output = _as_non_contiguous_3d(grad_output_c)
+
+    ref_main = main_grad_seed.clone()
+    _ref_wgrad_gemm_accum_fp16_cpu(input_tensor, grad_output, ref_main, dtype)
+
+    res_contig = main_grad_seed.clone()
+    wgrad_gemm_accum_fp16(input_c, grad_output_c, res_contig)
+
+    res_nc = main_grad_seed.clone()
+    wgrad_gemm_accum_fp16(input_tensor, grad_output, res_nc)
+
+    _assert_vs_cpu_ref(res_nc, ref_main, dtype, reduce_dim=dim0 * dim1)
+    utils.gems_assert_close(
+        res_nc, res_contig, dtype, reduce_dim=dim0 * dim1, atol=DEFAULT_ATOL
+    )
+
+
+@pytest.mark.wgrad_gemm_accum_fp32
+@pytest.mark.parametrize("dtype", FP32_ACCUM_CPU_REF_DTYPES)
+def test_wgrad_gemm_accum_fp32_multi_non_contiguous(dtype):
+    """input + grad_output + main_grad all non-contiguous vs contiguous path."""
+    _with_seed(20260757)
+    batch, in_features, out_features = 8, 32, 64
+    input_c = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output_c = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_c = torch.randn(
+        (out_features, in_features), dtype=torch.float32, device=flag_gems.device
+    )
+
+    input_nc = _as_non_contiguous_2d(input_c)
+    grad_output_nc = _as_non_contiguous_2d(grad_output_c)
+    main_nc = _as_non_contiguous_main_grad(main_c)
+    assert not input_nc.is_contiguous()
+    assert not grad_output_nc.is_contiguous()
+    assert not main_nc.is_contiguous()
+
+    ref_main = main_c.clone()
+    _ref_wgrad_gemm_accum_fp32_cpu(input_c, grad_output_c, ref_main)
+
+    res_contig = main_c.clone()
+    wgrad_gemm_accum_fp32(input_c, grad_output_c, res_contig)
+
+    wgrad_gemm_accum_fp32(input_nc, grad_output_nc, main_nc)
+
+    _assert_vs_cpu_ref(main_nc, ref_main, torch.float32, reduce_dim=batch)
+    utils.gems_assert_close(
+        main_nc, res_contig, torch.float32, reduce_dim=batch, atol=DEFAULT_ATOL
+    )
+
+
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp16_multi_non_contiguous(dtype):
+    """fp16/bf16: input + grad_output + main_grad all non-contiguous."""
+    _with_seed(20260758)
+    batch, in_features, out_features = 8, 32, 64
+    input_c = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output_c = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_c = torch.randn(
+        (out_features, in_features), dtype=dtype, device=flag_gems.device
+    )
+
+    input_nc = _as_non_contiguous_2d(input_c)
+    grad_output_nc = _as_non_contiguous_2d(grad_output_c)
+    main_nc = _as_non_contiguous_main_grad(main_c)
+    assert not main_nc.is_contiguous()
+
+    ref_main = main_c.clone()
+    _ref_wgrad_gemm_accum_fp16_cpu(input_c, grad_output_c, ref_main, dtype)
+
+    res_contig = main_c.clone()
+    wgrad_gemm_accum_fp16(input_c, grad_output_c, res_contig)
+
+    wgrad_gemm_accum_fp16(input_nc, grad_output_nc, main_nc)
+
+    _assert_vs_cpu_ref(main_nc, ref_main, dtype, reduce_dim=batch)
+    utils.gems_assert_close(
+        main_nc, res_contig, dtype, reduce_dim=batch, atol=DEFAULT_ATOL
+    )
+
+
+@pytest.mark.wgrad_gemm_accum_fp32
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+@pytest.mark.parametrize("dtype", FP32_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp32_vs_apex_multi_non_contiguous(dtype):
+    """All-non-contiguous gems path must match Apex on contiguous tensors."""
+    _with_seed(20260759)
+    batch, in_features, out_features = 8, 32, 64
+    input_c = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output_c = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_c = torch.randn(
+        (out_features, in_features), dtype=torch.float32, device=flag_gems.device
+    )
+
+    input_nc = _as_non_contiguous_2d(input_c)
+    grad_output_nc = _as_non_contiguous_2d(grad_output_c)
+    gems_main = _as_non_contiguous_main_grad(main_c)
+
+    apex_main = main_c.clone()
+    apex_wgrad.wgrad_gemm_accum_fp32(input_c, grad_output_c, apex_main)
+    wgrad_gemm_accum_fp32(input_nc, grad_output_nc, gems_main)
+
+    _assert_vs_apex(gems_main, apex_main, torch.float32, reduce_dim=batch)
+
+
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+@pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp16_vs_apex_multi_non_contiguous(dtype):
+    """fp16/bf16 all-non-contiguous path vs Apex contiguous."""
+    _with_seed(20260760)
+    batch, in_features, out_features = 8, 32, 64
+    input_c = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output_c = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_c = torch.randn(
+        (out_features, in_features), dtype=dtype, device=flag_gems.device
+    )
+
+    input_nc = _as_non_contiguous_2d(input_c)
+    grad_output_nc = _as_non_contiguous_2d(grad_output_c)
+    gems_main = _as_non_contiguous_main_grad(main_c)
+
+    apex_main = main_c.clone()
+    apex_wgrad.wgrad_gemm_accum_fp16(input_c, grad_output_c, apex_main)
+    wgrad_gemm_accum_fp16(input_nc, grad_output_nc, gems_main)
+
+    _assert_vs_apex(gems_main, apex_main, dtype, reduce_dim=batch)
+
+
+>>>>>>> Stashed changes
 def _make_numeric_boundary_tensors(
     case, *, batch, in_features, out_features, dtype, device, seed
 ):
