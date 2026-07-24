@@ -37,6 +37,21 @@ WGRAD_SHAPES_3D = [
     (2, 4, 16, 32),
 ]
 
+# Training-scale / long-seq shapes aligned with benchmark/test_wgrad_gemm_accum.py.
+# Correctness here is vs Apex only (CPU fp64 matmul is too slow at this scale).
+WGRAD_SHAPES_LARGE_2D = [
+    (64, 512, 1024),
+    (256, 2048, 4096),
+    (1024, 1024, 1024),
+    (2048, 2048, 2048),
+    (8192, 4096, 4096),  # large K ≈ token-batch × seq
+]
+
+# Collapsed K = dim0 * dim1 matches the large-K 2d case above.
+WGRAD_SHAPES_LARGE_3D = [
+    (8, 1024, 4096, 4096),
+]
+
 FP32_ACCUM_INPUT_DTYPES = [torch.float32, torch.float16]
 if utils.bf16_is_supported:
     FP32_ACCUM_INPUT_DTYPES.append(torch.bfloat16)
@@ -537,6 +552,103 @@ def test_wgrad_gemm_accum_fp16_vs_apex(batch, in_features, out_features, dtype):
     wgrad_gemm_accum_fp16(input_tensor, grad_output, gems_main_grad)
 
     _assert_vs_apex(gems_main_grad, apex_main_grad, dtype, reduce_dim=batch)
+
+
+@pytest.mark.wgrad_gemm_accum_fp32
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+@pytest.mark.parametrize("batch, in_features, out_features", WGRAD_SHAPES_LARGE_2D)
+@pytest.mark.parametrize("dtype", FP32_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp32_vs_apex_large_shape(
+    batch, in_features, out_features, dtype
+):
+    """Large / long-seq shapes from the benchmark suite, vs Apex."""
+    _with_seed(20260745)
+    input_tensor = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad_seed = torch.randn(
+        (out_features, in_features), dtype=torch.float32, device=flag_gems.device
+    )
+
+    apex_main_grad = main_grad_seed.clone()
+    gems_main_grad = main_grad_seed.clone()
+
+    apex_wgrad.wgrad_gemm_accum_fp32(input_tensor, grad_output, apex_main_grad)
+    wgrad_gemm_accum_fp32(input_tensor, grad_output, gems_main_grad)
+
+    _assert_vs_apex(gems_main_grad, apex_main_grad, torch.float32, reduce_dim=batch)
+
+
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+@pytest.mark.parametrize("batch, in_features, out_features", WGRAD_SHAPES_LARGE_2D)
+@pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp16_vs_apex_large_shape(
+    batch, in_features, out_features, dtype
+):
+    """Large / long-seq shapes on fp16/bf16 accum path, vs Apex."""
+    _with_seed(20260746)
+    input_tensor = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad_seed = torch.randn(
+        (out_features, in_features), dtype=dtype, device=flag_gems.device
+    )
+
+    apex_main_grad = main_grad_seed.clone()
+    gems_main_grad = main_grad_seed.clone()
+
+    apex_wgrad.wgrad_gemm_accum_fp16(input_tensor, grad_output, apex_main_grad)
+    wgrad_gemm_accum_fp16(input_tensor, grad_output, gems_main_grad)
+
+    _assert_vs_apex(gems_main_grad, apex_main_grad, dtype, reduce_dim=batch)
+
+
+@pytest.mark.wgrad_gemm_accum_fp32
+@pytest.mark.skipif(
+    not HAS_APEX_WGRAD,
+    reason="Apex fused_weight_gradient_mlp_cuda not installed",
+)
+@pytest.mark.parametrize(
+    "dim0, dim1, in_features, out_features", WGRAD_SHAPES_LARGE_3D
+)
+@pytest.mark.parametrize("dtype", FP32_ACCUM_3D_APEX_DTYPES)
+def test_wgrad_gemm_accum_fp32_vs_apex_large_shape_3d(
+    dim0, dim1, in_features, out_features, dtype
+):
+    """3D long-seq collapse (large K) vs Apex on fp32 accum."""
+    _with_seed(20260747)
+    input_tensor = torch.randn(
+        (dim0, dim1, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (dim0, dim1, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_grad_seed = torch.randn(
+        (out_features, in_features), dtype=torch.float32, device=flag_gems.device
+    )
+
+    apex_main_grad = main_grad_seed.clone()
+    gems_main_grad = main_grad_seed.clone()
+
+    apex_wgrad.wgrad_gemm_accum_fp32(input_tensor, grad_output, apex_main_grad)
+    wgrad_gemm_accum_fp32(input_tensor, grad_output, gems_main_grad)
+
+    _assert_vs_apex(
+        gems_main_grad, apex_main_grad, torch.float32, reduce_dim=dim0 * dim1
+    )
 
 
 @pytest.mark.wgrad_gemm_accum_fp32
