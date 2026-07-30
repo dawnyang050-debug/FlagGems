@@ -296,6 +296,28 @@ def _as_general_non_contiguous_main_grad(contiguous_2d: torch.Tensor) -> torch.T
     return nc
 
 
+def _as_irregular_non_contiguous_main_grad(contiguous_2d: torch.Tensor) -> torch.Tensor:
+    """Build a general NC main_grad that is neither transpose- nor row-major-padded.
+
+    This keeps a true slow-path layout after fp16 row-major-padded fastpath is enabled.
+    """
+    out_f, in_f = contiguous_2d.shape
+    # shape: (out*2, in), strides typically (1, in) after transpose
+    weird = torch.empty(
+        in_f,
+        out_f * 2,
+        dtype=contiguous_2d.dtype,
+        device=contiguous_2d.device,
+    ).transpose(0, 1)
+    nc = weird[:out_f, :]
+    nc.copy_(contiguous_2d)
+    assert not nc.is_contiguous()
+    assert not nc.transpose(0, 1).is_contiguous()
+    assert nc.stride(1) != 1
+    assert nc.shape == contiguous_2d.shape
+    return nc
+
+
 @pytest.fixture(autouse=True)
 def _quiet_nc_main_grad_warn(request):
     """Accuracy NC cases: silence densify+copy one-shot warning (tested separately)."""
@@ -306,6 +328,7 @@ def _quiet_nc_main_grad_warn(request):
             "test_wgrad_gemm_accum_fp32_require_contiguous",
             "test_ensure_contiguous_main_grad_rebinding",
             "test_wgrad_gemm_accum_fp32_transpose_contig_main_grad_no_warn",
+            "test_wgrad_gemm_accum_fp16_irregular_main_grad_warns_once",
         )
     ):
         yield
@@ -1194,6 +1217,99 @@ def test_wgrad_gemm_accum_fp16_main_grad_non_contiguous(dtype):
 
     _assert_vs_cpu_ref(res_nc, ref_main, dtype, reduce_dim=batch)
     _assert_vs_cpu_ref(res_nc, res_contig, dtype, reduce_dim=batch)
+
+
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.wgrad_main_grad_non_contig
+@pytest.mark.parametrize("dtype", FP16_ACCUM_INPUT_DTYPES)
+def test_wgrad_gemm_accum_fp16_row_major_padded_main_grad_no_warn(monkeypatch, dtype):
+    """Row-major padded NC main_grad should use fp16 fastpath without densify warn."""
+    import flag_gems.ops.wgrad_gemm_accum as wgrad_mod
+
+    monkeypatch.delenv("FLAGGEMS_WGRAD_REQUIRE_CONTIGUOUS_MAIN_GRAD", raising=False)
+    monkeypatch.setattr(wgrad_mod, "_WGRAD_NC_MAIN_WARNED", False)
+
+    _with_seed(20260811)
+    batch, in_features, out_features = 8, 32, 64
+    input_tensor = torch.randn(
+        (batch, in_features), dtype=dtype, device=flag_gems.device
+    )
+    grad_output = torch.randn(
+        (batch, out_features), dtype=dtype, device=flag_gems.device
+    )
+    main_c = torch.randn(
+        (out_features, in_features), dtype=dtype, device=flag_gems.device
+    )
+    main_nc = _as_general_non_contiguous_main_grad(main_c)
+    assert not main_nc.is_contiguous()
+    assert main_nc.stride(1) == 1
+    assert main_nc.stride(0) >= main_nc.size(1)
+
+    ref = main_c.clone()
+    _ref_wgrad_gemm_accum_fp16_cpu(input_tensor, grad_output, ref, dtype)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        wgrad_gemm_accum_fp16(input_tensor, grad_output, main_nc)
+        densify_warns = [
+            w
+            for w in caught
+            if issubclass(w.category, UserWarning) and "densify+copy" in str(w.message)
+        ]
+    assert densify_warns == []
+    _assert_vs_cpu_ref(main_nc, ref, dtype, reduce_dim=batch)
+
+
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.wgrad_main_grad_non_contig
+def test_wgrad_gemm_accum_fp16_irregular_main_grad_warns_once(monkeypatch):
+    """Irregular NC main_grad should still warn once about densify+copy."""
+    import flag_gems.ops.wgrad_gemm_accum as wgrad_mod
+
+    monkeypatch.delenv("FLAGGEMS_WGRAD_REQUIRE_CONTIGUOUS_MAIN_GRAD", raising=False)
+    monkeypatch.setattr(wgrad_mod, "_WGRAD_NC_MAIN_WARNED", False)
+
+    input_tensor = torch.randn(4, 16, dtype=torch.float16, device=flag_gems.device)
+    grad_output = torch.randn(4, 32, dtype=torch.float16, device=flag_gems.device)
+    main_c = torch.zeros(32, 16, dtype=torch.float16, device=flag_gems.device)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        wgrad_gemm_accum_fp16(
+            input_tensor, grad_output, _as_irregular_non_contiguous_main_grad(main_c)
+        )
+        wgrad_gemm_accum_fp16(
+            input_tensor, grad_output, _as_irregular_non_contiguous_main_grad(main_c)
+        )
+
+    densify_warns = [
+        w
+        for w in caught
+        if issubclass(w.category, UserWarning) and "densify+copy" in str(w.message)
+    ]
+    assert len(densify_warns) == 1
+    assert "ensure_contiguous_main_grad" in str(densify_warns[0].message)
+
+
+@pytest.mark.wgrad_gemm_accum_fp16
+@pytest.mark.wgrad_main_grad_non_contig
+def test_wgrad_gemm_accum_fp16_require_contiguous_rejects_row_major_padded(monkeypatch):
+    """REQUIRE_CONTIGUOUS=1 should still reject fp16 row-major padded NC."""
+    import flag_gems.ops.wgrad_gemm_accum as wgrad_mod
+
+    monkeypatch.setenv("FLAGGEMS_WGRAD_REQUIRE_CONTIGUOUS_MAIN_GRAD", "1")
+    monkeypatch.setattr(wgrad_mod, "_WGRAD_NC_MAIN_WARNED", False)
+
+    input_tensor = torch.randn(4, 16, dtype=torch.float16, device=flag_gems.device)
+    grad_output = torch.randn(4, 32, dtype=torch.float16, device=flag_gems.device)
+    main_c = torch.zeros(32, 16, dtype=torch.float16, device=flag_gems.device)
+    main_nc = _as_general_non_contiguous_main_grad(main_c)
+
+    with pytest.raises(RuntimeError, match="must be contiguous"):
+        wgrad_gemm_accum_fp16(input_tensor, grad_output, main_nc)
+
+    # Contiguous main_grad still works under the same env.
+    wgrad_gemm_accum_fp16(input_tensor, grad_output, main_c.clone())
 
 
 @pytest.mark.wgrad_gemm_accum_fp32
